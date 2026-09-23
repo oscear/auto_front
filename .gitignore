@@ -12,6 +12,12 @@ dist
 dist-ssr
 *.local
 
+# AI tool config
+.claude
+
+# Playwright test output
+test-results/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
