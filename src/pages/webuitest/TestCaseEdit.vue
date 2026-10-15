@@ -419,10 +419,17 @@
                       style="width: 50%"
                     />
                     <div class="form-tip" v-if="activeStep.action === 'AIassert'">
-                      用一句话描述页面应该呈现的结果，AI 读取页面文字判断是否满足；页面还在加载时会在等待时间内反复检查
+                      写页面上能直接看到的文字，例如：页面上有“预约叫车”按钮、订单列表第一条订单的状态是订单取消。
+                      不要写需要推断的结论，例如：已进入包车下单页、已切到因私（页面上没有这几个字，AI 会判不满足）。
+                      AI 只读取页面上可见的文字；页面还在加载时会在等待时间内反复检查
                     </div>
                     <!-- <div class="form-tip" v-if="activeStep.action === 'goto'">请输入完整的URL地址</div>
                   <div class="form-tip" v-else>请输入要填写的内容</div> -->
+                  </el-form-item>
+
+                  <el-form-item label="失败后停止">
+                    <el-checkbox v-model="activeStep.stopOnFail">这一步失败时不再执行后面的步骤</el-checkbox>
+                    <div class="form-tip">用于关键前置步骤，例如“只勾选挡板平台”失败后不能再点叫车</div>
                   </el-form-item>
 
                   <el-form-item label="最多等待" v-if="activeStep.action === 'AIassert'">
