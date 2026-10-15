@@ -409,10 +409,32 @@
                   </el-form-item>
 
                   <!-- <el-form-item label="输入内容" v-if="['fill', 'goto', 'upload_file'].includes(activeStep.action)"> -->
-                  <el-form-item label="输入内容" v-if="elementValueRequired.includes(activeStep.action)">
-                    <el-input v-model="activeStep.value" placeholder="输入内容" style="width: 50%" />
+                  <el-form-item
+                    :label="activeStep.action === 'AIassert' ? '期望描述' : '输入内容'"
+                    v-if="elementValueRequired.includes(activeStep.action)"
+                  >
+                    <el-input
+                      v-model="activeStep.value"
+                      :placeholder="activeStep.action === 'AIassert' ? '例如：订单列表第一条订单的状态是订单取消' : '输入内容'"
+                      style="width: 50%"
+                    />
+                    <div class="form-tip" v-if="activeStep.action === 'AIassert'">
+                      用一句话描述页面应该呈现的结果，AI 读取页面文字判断是否满足；页面还在加载时会在等待时间内反复检查
+                    </div>
                     <!-- <div class="form-tip" v-if="activeStep.action === 'goto'">请输入完整的URL地址</div>
                   <div class="form-tip" v-else>请输入要填写的内容</div> -->
+                  </el-form-item>
+
+                  <el-form-item label="最多等待" v-if="activeStep.action === 'AIassert'">
+                    <el-input-number
+                      v-model="activeStep.timeout"
+                      :min="1"
+                      :max="120"
+                      placeholder="默认 8"
+                      style="width: 20%"
+                      controls-position="right"
+                    />
+                    <span style="margin-left: 8px">秒</span>
                   </el-form-item>
 
                   <el-form-item label="等待时间" v-if="activeStep.action === 'sleep'">

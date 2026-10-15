@@ -14,13 +14,14 @@ export const stepTypes = [
   { value: 'switch_to_tab', label: '切到指定tab' },
   { value: 'press_key', label: '键盘按键' },
   { value: 'AItest', label: 'AI执行' },
+  { value: 'AIassert', label: 'AI断言' },
 ];
 
 // 必须要填写元素定位的操作
 export const elementLocatorRequired = ['click', 'doubleClick', 'fill', 'enter_frame', 'upload_file'];
 
 // 必须要填写内容的操作
-export const elementValueRequired = ['goto', 'fill', 'upload_file', 'switch_to_tab', 'press_key', 'AItest'];
+export const elementValueRequired = ['goto', 'fill', 'upload_file', 'switch_to_tab', 'press_key', 'AItest', 'AIassert'];
 
 // 断言类型配置
 export const assertConfig = {
