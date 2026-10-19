@@ -409,9 +409,19 @@
                   </el-form-item>
 
                   <!-- <el-form-item label="输入内容" v-if="['fill', 'goto', 'upload_file'].includes(activeStep.action)"> -->
+                  <el-form-item label="目标状态" v-if="activeStep.action === 'carMockStatus'">
+                    <el-select v-model="activeStep.value" placeholder="选择要推进到的状态" style="width: 30%">
+                      <el-option v-for="s in carMockStages" :key="s" :label="s" :value="s" />
+                    </el-select>
+                    <div class="form-tip">
+                      把当前订单的挡板买入单推进到这个状态（中间状态自动按顺序补上），推进后用 AI 断言核对页面。
+                      只对挡板供应商的单生效；项目要配置 CAR_MOCK，乘车人必须在挡板乘车人字典里。行程中之后 H5 不能再取消
+                    </div>
+                  </el-form-item>
+
                   <el-form-item
                     :label="activeStep.action === 'AIassert' ? '期望描述' : '输入内容'"
-                    v-if="elementValueRequired.includes(activeStep.action)"
+                    v-if="elementValueRequired.includes(activeStep.action) && activeStep.action !== 'carMockStatus'"
                   >
                     <el-input
                       v-model="activeStep.value"
@@ -793,6 +803,7 @@ import {
   assertNeedsSelector,
   assertNeedsAttribute,
   assertNeedsExpected,
+  carMockStages,
 } from '@/utils/stepsConfig';
 import { projectApi, parseNaturalLanguageStream } from '@/utils/api';
 

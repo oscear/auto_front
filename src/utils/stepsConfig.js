@@ -15,13 +15,17 @@ export const stepTypes = [
   { value: 'press_key', label: '键盘按键' },
   { value: 'AItest', label: 'AI执行' },
   { value: 'AIassert', label: 'AI断言' },
+  { value: 'carMockStatus', label: '推进挡板订单' },
 ];
+
+// 推进挡板订单（用车）：可选的目标状态，挡板按顺序推进，中间状态会自动补上
+export const carMockStages = ['接单', '司机到达', '行程中', '行程结束', '已支付'];
 
 // 必须要填写元素定位的操作
 export const elementLocatorRequired = ['click', 'doubleClick', 'fill', 'enter_frame', 'upload_file'];
 
 // 必须要填写内容的操作
-export const elementValueRequired = ['goto', 'fill', 'upload_file', 'switch_to_tab', 'press_key', 'AItest', 'AIassert'];
+export const elementValueRequired = ['goto', 'fill', 'upload_file', 'switch_to_tab', 'press_key', 'AItest', 'AIassert', 'carMockStatus'];
 
 // 断言类型配置
 export const assertConfig = {
