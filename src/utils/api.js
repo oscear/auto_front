@@ -190,3 +190,19 @@ export const kbApi = {
   update: (id, data) => request.put(`/api/kb/${id}/`, data),
   delete: (id) => request.delete(`/api/kb/${id}/`),
 };
+
+// 知识库 · 页面档案API
+export const kbPageApi = {
+  getList: (params) => request.get('/api/kb-pages/', { params }),
+  create: (data) => request.post('/api/kb-pages/', data),
+  update: (id, data) => request.put(`/api/kb-pages/${id}/`, data),
+  delete: (id) => request.delete(`/api/kb-pages/${id}/`),
+};
+
+// 知识库 · 页面跳转API
+export const kbTransitionApi = {
+  getList: (params) => request.get('/api/kb-transitions/', { params }),
+  create: (data) => request.post('/api/kb-transitions/', data),
+  update: (id, data) => request.put(`/api/kb-transitions/${id}/`, data),
+  delete: (id) => request.delete(`/api/kb-transitions/${id}/`),
+};

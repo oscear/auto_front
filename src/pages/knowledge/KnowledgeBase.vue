@@ -1,5 +1,19 @@
 <template>
   <div class="kb-manager">
+    <el-tabs v-model="activeTab" class="kb-tabs">
+      <el-tab-pane label="元素条目" name="elements" />
+      <el-tab-pane label="页面档案" name="pages" />
+      <el-tab-pane label="页面跳转" name="transitions" />
+    </el-tabs>
+
+    <KbPageStates
+      v-if="activeTab === 'pages'"
+      :projects="projects"
+      @view-elements="viewElements"
+    />
+    <KbTransitions v-else-if="activeTab === 'transitions'" :projects="projects" />
+
+    <template v-else>
     <!-- 操作和筛选区域 -->
     <el-card class="control-card" shadow="never">
       <div class="control-container">
@@ -43,6 +57,18 @@
               <el-option label="全部页面" value="" />
               <el-option v-for="p in uniquePages" :key="p" :label="p" :value="p" />
             </el-select>
+
+            <el-select v-model="filterState" placeholder="筛选状态" class="filter-select" clearable>
+              <el-option v-for="st in uniqueStates" :key="st.value" :label="st.label" :value="st.value" />
+            </el-select>
+
+            <el-select v-model="filterSource" placeholder="筛选来源" class="filter-select" clearable>
+              <el-option v-for="(o, k) in SOURCE_MAP" :key="k" :label="o.label" :value="k" />
+            </el-select>
+
+            <el-select v-model="filterRole" placeholder="筛选角色" class="filter-select" clearable>
+              <el-option v-for="r in ROLE_OPTIONS" :key="r" :label="r" :value="r" />
+            </el-select>
           </div>
         </div>
 
@@ -76,7 +102,7 @@
 
       <div class="table-container">
         <el-table
-          :data="filteredList"
+          :data="pagedList"
           style="width: 100%"
           class="modern-table"
           empty-text="暂无数据"
@@ -94,6 +120,30 @@
           </el-table-column>
           <el-table-column prop="page" label="页面" min-width="100" show-overflow-tooltip />
           <el-table-column prop="name" label="名称" min-width="120" show-overflow-tooltip />
+          <el-table-column label="状态" min-width="80" show-overflow-tooltip>
+            <template #default="scope">{{ scope.row.state || '-' }}</template>
+          </el-table-column>
+          <el-table-column label="角色" min-width="80">
+            <template #default="scope">{{ scope.row.role || '-' }}</template>
+          </el-table-column>
+          <el-table-column label="来源" min-width="90" align="center">
+            <template #default="scope">
+              <el-tag size="small" :type="sourceInfo(scope.row.source).type">
+                {{ sourceInfo(scope.row.source).label }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="置信度" min-width="110">
+            <template #default="scope">
+              <el-progress
+                v-if="scope.row.confidence !== null && scope.row.confidence !== undefined"
+                :percentage="Math.min(100, Math.max(0, Number(scope.row.confidence)))"
+                :stroke-width="6"
+                :color="confidenceColor(scope.row.confidence)"
+              />
+              <span v-else class="no-data">-</span>
+            </template>
+          </el-table-column>
           <el-table-column label="选择器" min-width="200">
             <template #default="scope">
               <el-tooltip
@@ -165,6 +215,17 @@
             </template>
           </el-table-column>
         </el-table>
+      </div>
+      <div class="pagination-bar">
+        <el-pagination
+          v-model:current-page="currentPage"
+          v-model:page-size="pageSize"
+          :page-sizes="[20, 50, 100, 200]"
+          :total="filteredList.length"
+          layout="total, sizes, prev, pager, next, jumper"
+          background
+          small
+        />
       </div>
     </el-card>
 
@@ -242,17 +303,44 @@
         <el-form-item label="优先级">
           <el-input-number v-model="form.priority" :min="0" :max="100" />
         </el-form-item>
+        <el-form-item label="页面状态">
+          <el-input v-model="form.state" placeholder="页面状态（留空为默认状态）" />
+        </el-form-item>
+        <el-form-item label="元素角色">
+          <el-select v-model="form.role" placeholder="请选择角色" clearable style="width: 100%">
+            <el-option v-for="r in ROLE_OPTIONS" :key="r" :label="r" :value="r" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="所在容器">
+          <el-input v-model="form.container" placeholder="所在容器" />
+        </el-form-item>
+        <el-form-item label="来源">
+          <el-select v-model="form.source" style="width: 100%">
+            <el-option v-for="(o, k) in SOURCE_MAP" :key="k" :label="o.label" :value="k" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="置信度">
+          <el-input-number v-model="form.confidence" :min="0" :max="100" />
+        </el-form-item>
+        <el-form-item v-if="form.meta && Object.keys(form.meta).length" label="meta 明细">
+          <el-collapse class="meta-collapse">
+            <el-collapse-item title="展开查看（只读）" name="meta">
+              <pre class="meta-json">{{ JSON.stringify(form.meta, null, 2) }}</pre>
+            </el-collapse-item>
+          </el-collapse>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
         <el-button type="primary" @click="submitForm">确认</el-button>
       </template>
     </el-dialog>
+    </template>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, computed, nextTick } from 'vue';
+import { ref, onMounted, computed, nextTick, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import {
@@ -264,6 +352,8 @@ import {
   Delete,
 } from '@element-plus/icons-vue';
 import { kbApi, projectApi } from '@/utils/api';
+import KbPageStates from './KbPageStates.vue';
+import KbTransitions from './KbTransitions.vue';
 
 const route = useRoute();
 
@@ -273,6 +363,26 @@ const projects = ref([]);
 const searchQuery = ref('');
 const filterProject = ref('');
 const filterPage = ref('');
+const filterState = ref('');
+const filterSource = ref('');
+const filterRole = ref('');
+const activeTab = ref('elements');
+
+// 分页（前端分页，避免上千条一次渲染）
+const currentPage = ref(1);
+const pageSize = ref(50);
+
+const ROLE_OPTIONS = ['button', 'link', 'input', 'checkbox', 'radio', 'tab', 'select', 'clickable'];
+const SOURCE_MAP = {
+  '': { label: '人工/历史', type: 'info' },
+  ai: { label: 'AI回填', type: 'warning' },
+  both: { label: '源码+渲染', type: 'success' },
+  render: { label: '仅渲染', type: '' },
+  code: { label: '仅源码', type: 'danger' },
+};
+const sourceInfo = (src) => SOURCE_MAP[src || ''] || { label: src, type: 'info' };
+const confidenceColor = (v) => (v >= 80 ? '#67c23a' : v >= 50 ? '#e6a23c' : '#f56c6c');
+const DEFAULT_STATE = '__default__';
 
 // 对话框
 const dialogVisible = ref(false);
@@ -286,6 +396,12 @@ const form = ref({
   aliases: [],
   desc: '',
   priority: 10,
+  state: '',
+  role: '',
+  container: '',
+  source: '',
+  confidence: 0,
+  meta: null,
 });
 
 // 选择器标签输入
@@ -302,6 +418,11 @@ const aliasInputRef = ref(null);
 const uniquePages = computed(() => {
   const pages = kbList.value.map((item) => item.page).filter(Boolean);
   return [...new Set(pages)];
+});
+
+const uniqueStates = computed(() => {
+  const set = new Set(kbList.value.map((item) => item.state || ''));
+  return [...set].sort().map((v) => ({ value: v === '' ? DEFAULT_STATE : v, label: v === '' ? '(默认)' : v }));
 });
 
 // 计算属性：筛选后的列表
@@ -326,8 +447,42 @@ const filteredList = computed(() => {
     filtered = filtered.filter((item) => item.page === filterPage.value);
   }
 
+  if (filterState.value) {
+    const want = filterState.value === DEFAULT_STATE ? '' : filterState.value;
+    filtered = filtered.filter((item) => (item.state || '') === want);
+  }
+
+  if (filterSource.value) {
+    filtered = filtered.filter((item) => (item.source || '') === filterSource.value);
+  }
+
+  if (filterRole.value) {
+    filtered = filtered.filter((item) => item.role === filterRole.value);
+  }
+
   return filtered;
 });
+
+const pagedList = computed(() => {
+  const start = (currentPage.value - 1) * pageSize.value;
+  return filteredList.value.slice(start, start + pageSize.value);
+});
+
+// 筛选条件变化回到第一页
+watch([searchQuery, filterProject, filterPage, filterState, filterSource, filterRole], () => {
+  currentPage.value = 1;
+});
+
+// 从页面档案跳到该页面该状态下的元素列表
+const viewElements = ({ project, page, state }) => {
+  searchQuery.value = '';
+  filterSource.value = '';
+  filterRole.value = '';
+  filterProject.value = project || '';
+  filterPage.value = page || '';
+  filterState.value = state ? state : DEFAULT_STATE;
+  activeTab.value = 'elements';
+};
 
 // 行高亮：URL 带 ?highlight=<id> 时对应行底色加深
 const rowClassName = ({ row }) => {
@@ -377,6 +532,12 @@ const handleAdd = () => {
     aliases: [],
     desc: '',
     priority: 10,
+    state: '',
+    role: '',
+    container: '',
+    source: '',
+    confidence: 0,
+    meta: null,
   };
   dialogTitle.value = '新增知识条目';
   dialogVisible.value = true;
@@ -521,6 +682,7 @@ onMounted(() => {
 
 .filter-section {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -736,6 +898,32 @@ onMounted(() => {
 
 :deep(.el-form-item__label) {
   font-weight: 500;
+}
+
+.kb-tabs {
+  background: #fff;
+  padding: 0 12px;
+  border-radius: 4px;
+}
+
+.pagination-bar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 10px 16px;
+}
+
+.meta-collapse {
+  width: 100%;
+}
+
+.meta-json {
+  margin: 0;
+  max-height: 260px;
+  overflow: auto;
+  font-family: Menlo, Consolas, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 
 /* 响应式 */
