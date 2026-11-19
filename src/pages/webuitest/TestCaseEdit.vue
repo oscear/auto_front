@@ -81,6 +81,16 @@
             <el-icon><Document /></el-icon>
             <span>{{ pageTitle }}</span>
             <el-tag v-if="isViewMode" type="info" size="small" class="view-mode-tag">查看模式</el-tag>
+            <el-tag
+              v-if="isViewMode && currentRun"
+              :type="runStatusMeta(currentRun.status).type"
+              size="small"
+              class="view-mode-tag"
+            >
+              执行记录 #{{ currentRun.id }} · {{ runStatusMeta(currentRun.status).label }}（通过
+              {{ currentRun.passed_steps ?? 0 }} / 失败 {{ currentRun.failed_steps ?? 0 }} / 共
+              {{ currentRun.total_steps ?? 0 }}）
+            </el-tag>
           </div>
         </div>
         <div class="header-actions">
@@ -102,6 +112,15 @@
           </el-button>
         </div>
       </div>
+
+      <el-alert
+        v-if="isViewMode && currentRun && currentRun.error"
+        :title="`执行异常：${currentRun.error}`"
+        type="error"
+        show-icon
+        :closable="false"
+        style="flex-shrink: 0"
+      />
 
       <!-- 主要内容区域 -->
       <div class="main-content">
@@ -555,6 +574,9 @@
                           <div v-if="activeStep && activeStep.status === 'success' && activeStep.assertion_message">
                             <span>断言：{{ activeStep.assertion_message }} </span>
                           </div>
+                          <div v-if="activeStep && activeStep.status !== 'failed' && activeStep.message">
+                            <span>说明：{{ activeStep.message }} </span>
+                          </div>
                           <div v-if="activeStep && activeStep.status === 'failed'" style="width: 100%">
                             <span style="display: block; margin-bottom: 8px">失败原因：</span>
                             <div
@@ -570,14 +592,14 @@
                                 font-size: 13px;
                               "
                             >
-                              {{ activeStep.error || activeStep.assertion_message }}
+                              {{ activeStep.error || activeStep.assertion_message || activeStep.message }}
                             </div>
                           </div>
                           <div v-if="activeStep && activeStep.screenshot" style="width: 100%">
                             <span style="display: block; margin-bottom: 8px">截图：</span>
                             <div style="display: flex; align-items: center; gap: 12px">
                               <el-image
-                                :src="'data:image/png;base64,' + activeStep.screenshot"
+                                :src="resolveScreenshot(activeStep.screenshot)"
                                 fit="cover"
                                 style="
                                   width: 120px;
@@ -586,7 +608,7 @@
                                   border: 1px solid #e5e6eb;
                                   cursor: pointer;
                                 "
-                                :preview-src-list="['data:image/png;base64,' + activeStep.screenshot]"
+                                :preview-src-list="[resolveScreenshot(activeStep.screenshot)]"
                                 preview-teleported
                               />
                               <div style="color: #666; font-size: 12px">点击缩略图查看大图</div>
@@ -771,8 +793,8 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, nextTick, watch } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue';
+import { useRoute, useRouter, onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router';
 import { ElMessage, ElMessageBox, ElLoading } from 'element-plus';
 import draggable from 'vuedraggable';
 import {
@@ -805,7 +827,17 @@ import {
   assertNeedsExpected,
   carMockStages,
 } from '@/utils/stepsConfig';
-import { projectApi, parseNaturalLanguageStream } from '@/utils/api';
+import {
+  projectApi,
+  parseNaturalLanguageStream,
+  startCaseRun,
+  createPoller,
+  runStatusMeta,
+  unwrapList,
+  resolveScreenshot,
+  apiErrorText,
+  RUN_TERMINAL_STATUS,
+} from '@/utils/api';
 
 const route = useRoute();
 const router = useRouter();
@@ -831,10 +863,15 @@ const form = ref({
   url: '',
   device: 'chrome',
   steps: [],
-  result: [],
   natural_language_text: '',
   enable_ai_heal: false,
 });
+
+// 查看模式下展示的"执行结果步骤"：来自最近一次执行记录；老数据退回用例上的 result 数组。
+// 不再放进 form，避免保存时把结果回传给后端。
+const viewSteps = ref([]);
+// 当前展示的执行记录（没有执行记录或后端未升级时为 null）
+const currentRun = ref(null);
 
 // 自然语言原文相关
 const nlCollapseActive = ref([]); // 折叠面板展开状态
@@ -956,11 +993,11 @@ const rules = {
 // 当前显示的步骤列表
 const currentSteps = computed({
   get: () => {
-    return isViewMode.value ? form.value.result : form.value.steps;
+    return isViewMode.value ? viewSteps.value : form.value.steps;
   },
   set: (value) => {
     if (isViewMode.value) {
-      form.value.result = value;
+      viewSteps.value = value;
     } else {
       form.value.steps = value;
     }
@@ -971,14 +1008,14 @@ const currentSteps = computed({
 const activeStep = computed({
   get: () => {
     if (activeStepIndex.value >= 0) {
-      const steps = isViewMode.value ? form.value.result : form.value.steps;
-      return steps[activeStepIndex.value];
+      const steps = (isViewMode.value ? viewSteps.value : form.value.steps) || [];
+      return steps[activeStepIndex.value] || null;
     }
     return null;
   },
   set: (value) => {
     if (activeStepIndex.value >= 0) {
-      const steps = isViewMode.value ? form.value.result : form.value.steps;
+      const steps = isViewMode.value ? viewSteps.value : form.value.steps;
       steps[activeStepIndex.value] = value;
     }
   },
@@ -1029,7 +1066,7 @@ const addStep = () => {
 const onDragChange = (evt) => {
   // 更新当前选中的步骤索引
   if (activeStepIndex.value >= 0) {
-    const steps = isViewMode.value ? form.value.result : form.value.steps;
+    const steps = isViewMode.value ? viewSteps.value : form.value.steps;
     const movedStep = steps[activeStepIndex.value];
     if (movedStep) {
       // 找到移动后的步骤在新数组中的位置
@@ -1088,24 +1125,33 @@ const duplicateStep = (index) => {
   }
 };
 
+// 组装保存用的请求体：不回传执行结果、AI 解析缓存、执行状态（这些由后端执行时写，
+// 回传既浪费流量，也会把正在执行的用例写回旧值）
+const buildCasePayload = () => {
+  const { result, resolved_steps, status, ...rest } = form.value;
+  return {
+    ...rest,
+    // 只剥离执行态中间产物，AI/KB 出身字段与自愈标记继续回传后端
+    steps: stripAIFields(form.value.steps),
+    natural_language_text: nlEditingText.value || form.value.natural_language_text || '',
+  };
+};
+
 // 保存测试用例
 const saveTestCase = async () => {
   try {
     await formRef.value.validate();
     saving.value = true;
 
-    // 保存前只剥离执行态中间产物，AI/KB 出身字段与自愈标记继续回传后端
-    const payload = {
-      ...form.value,
-      steps: stripAIFields(form.value.steps),
-      natural_language_text: nlEditingText.value || form.value.natural_language_text || '',
-    };
+    const payload = buildCasePayload();
 
     if (form.value.id) {
       await projectApi.updateCase(form.value.id, payload);
       ElMessage.success('更新成功');
     } else {
-      await projectApi.createCase(payload);
+      const created = await projectApi.createCase(payload);
+      // 记下新建出来的 id，再点保存时走更新而不是重复新建
+      if (created?.id) form.value.id = created.id;
       ElMessage.success('新增成功');
     }
   } catch (error) {
@@ -1280,7 +1326,7 @@ const regenerateFromNL = async () => {
 const fetchProjects = async () => {
   try {
     const response = await projectApi.getProjects();
-    projects.value = response;
+    projects.value = unwrapList(response).items;
   } catch (error) {
     console.error('获取项目列表失败:', error);
     ElMessage.error('获取项目列表失败');
@@ -1291,31 +1337,100 @@ const fetchProjects = async () => {
 const fetchTestCases = async () => {
   try {
     const response = await projectApi.getCases();
-    testCases.value = response;
+    testCases.value = unwrapList(response).items;
   } catch (error) {
     console.error('获取用例列表失败:', error);
     ElMessage.error('获取用例列表失败');
   }
 };
 
+// 把执行记录的步骤转成本页结果面板沿用的字段
+const mapRunStep = (step, i) => {
+  const detail = step.detail && typeof step.detail === 'object' && !Array.isArray(step.detail) ? step.detail : {};
+  const status = step.status === 'passed' ? 'success' : step.status;
+  const durationMs = Number(step.duration_ms);
+  return {
+    ...detail,
+    id: step.id ?? `run-step-${i}`,
+    name: step.name,
+    action: step.action,
+    status,
+    duration: Number.isFinite(durationMs) && step.duration_ms !== null ? Math.round(durationMs / 10) / 100 : undefined,
+    run_time: step.started_at || step.created_at || detail.run_time || '',
+    message: step.message || '',
+    error: status === 'failed' ? step.message || detail.error || '' : undefined,
+    screenshot: step.screenshot_url || step.screenshot || '',
+  };
+};
+
+// 查看模式：结果步骤变化后选中合适的一步
+const selectFirstViewStep = () => {
+  if (!isViewMode.value) return;
+  const len = viewSteps.value.length;
+  if (len === 0) {
+    activeStepIndex.value = -1;
+    return;
+  }
+  if (activeStepIndex.value < 0 || activeStepIndex.value >= len) activeStepIndex.value = 0;
+  activeStepTab.value = 'result';
+};
+
+const applyRunDetail = (run) => {
+  currentRun.value = run;
+  viewSteps.value = (run?.steps || []).map(mapRunStep);
+  selectFirstViewStep();
+};
+
+// 查看模式取结果：优先执行记录（地址栏 runId > 用例摘要里的 run_id > 该用例最近一条），
+// 取不到（没有记录，或后端还没有执行记录接口）就退回用例上的旧 result 数组
+let viewLoadSeq = 0;
+const loadViewResult = async (caseId, legacyResult) => {
+  const seq = ++viewLoadSeq;
+  let runId = route.query.runId || null;
+  if (!runId && legacyResult && !Array.isArray(legacyResult) && legacyResult.run_id != null) {
+    runId = legacyResult.run_id;
+  }
+  if (!runId) {
+    try {
+      const res = await projectApi.getRuns({ testcase: caseId, page: 1, page_size: 1 });
+      runId = unwrapList(res).items[0]?.id ?? null;
+    } catch (error) {
+      runId = null;
+    }
+  }
+  if (runId) {
+    try {
+      const run = await projectApi.getRun(runId);
+      if (seq !== viewLoadSeq) return;
+      applyRunDetail(run);
+      return;
+    } catch (error) {
+      // 落到下面的旧数据
+    }
+  }
+  if (seq !== viewLoadSeq) return;
+  currentRun.value = null;
+  viewSteps.value = Array.isArray(legacyResult) ? legacyResult : [];
+  selectFirstViewStep();
+};
+
 // 获取用例详情
 const fetchTestCase = async (id) => {
   try {
     const response = await projectApi.getCase(id);
+    // 执行结果和 AI 解析缓存不进表单（体积大，且保存时不该回传）
+    const { result, resolved_steps, ...rest } = response;
     form.value = {
-      ...response,
+      ...rest,
       enable_ai_heal: response.enable_ai_heal ?? false,
     };
     nlEditingText.value = response.natural_language_text || '';
 
-    // 设置初始选中的步骤
-    const steps = isViewMode.value ? form.value.result : form.value.steps;
-    if (steps && steps.length > 0) {
+    if (isViewMode.value) {
+      await loadViewResult(id, result);
+    } else if (form.value.steps && form.value.steps.length > 0) {
+      // 设置初始选中的步骤
       activeStepIndex.value = 0;
-      // 查看模式下默认显示执行结果tab
-      if (isViewMode.value) {
-        activeStepTab.value = 'result';
-      }
     }
   } catch (error) {
     console.error('获取用例详情失败:', error);
@@ -1352,8 +1467,9 @@ const getStepStatusType = (step) => {
   if (step.status) {
     const typeMap = {
       success: 'success',
-      failed: 'error',
+      failed: 'danger',
       running: 'info',
+      skipped: 'info',
     };
     return typeMap[step.status] || 'info';
   }
@@ -1365,42 +1481,184 @@ const getStepStatusLabel = (status) => {
     success: '成功',
     failed: '失败',
     running: '执行中',
+    skipped: '跳过',
   };
   return labelMap[status] || '未知状态';
 };
 
-// 重新执行用例
-const runTestCase = async () => {
-  try {
-    running.value = true;
-    await projectApi.runCase({ id: form.value.id });
-    ElMessage.success('用例执行成功');
-    startPolling();
-    // await fetchTestCase(form.value.id);
-  } catch (error) {
-    console.error('重新执行用例失败:', error);
-    ElMessage.error('重新执行用例失败');
-    throw error; // 重新抛出错误，让调用者能够处理
-  } finally {
-    running.value = false;
+// ───────────── 执行与进度轮询 ─────────────
+// 新流程：POST /api/testcases/<id>/run/ 拿 run_id → 每 2 秒查轻量进度接口 → 终态后取一次执行详情。
+// 停止条件：到终态、连续 3 次请求出错、超过 30 分钟、组件卸载或路由离开。
+let runPoller = null;
+let runLoading = null;
+let runInFlight = false;
+let runSeq = 0; // 每次开始/中止执行流程加一，用来丢弃过期的异步结果
+let autoRunHandledFor = null;
+
+const showRunLoading = (text) => {
+  if (runLoading) {
+    runLoading.setText(text);
+  } else {
+    runLoading = ElLoading.service({ lock: true, text, background: 'rgba(0, 0, 0, 0.7)' });
   }
 };
 
+const closeRunLoading = () => {
+  if (runLoading) {
+    runLoading.close();
+    runLoading = null;
+  }
+};
+
+// 结束（或中止）当前执行流程：停轮询、关遮罩、复位按钮
+const stopRun = () => {
+  runSeq++;
+  if (runPoller) {
+    runPoller.stop();
+    runPoller = null;
+  }
+  closeRunLoading();
+  runInFlight = false;
+  running.value = false;
+};
+
+const progressText = (data) => {
+  if (!data || data.status === 'queued') return '已提交，排队等待执行...';
+  const total = Number(data.total_steps ?? data.total ?? 0);
+  const passed = Number(data.passed_steps ?? data.passed ?? 0);
+  const failed = Number(data.failed_steps ?? data.failed ?? 0);
+  const totalText = total > 0 ? `/${total}` : '';
+  return `正在执行用例（已完成 ${passed + failed}${totalText} 步${failed > 0 ? `，失败 ${failed} 步` : ''}），请稍候...`;
+};
+
+// 新流程：轮询进度接口
+const pollRunProgress = (runId, seq) => {
+  runPoller = createPoller({
+    fetch: () => projectApi.getRunProgress(runId),
+    isDone: (data) => RUN_TERMINAL_STATUS.includes(data?.status),
+    onTick: (data) => {
+      if (seq === runSeq) showRunLoading(progressText(data));
+    },
+    onStop: async (reason, payload) => {
+      if (seq !== runSeq) return;
+      runPoller = null;
+      // 不论哪种原因停下，都取一次执行详情展示已有的步骤
+      viewLoadSeq++;
+      let run = null;
+      try {
+        run = await projectApi.getRun(runId);
+      } catch (error) {
+        run = null;
+      }
+      if (seq !== runSeq) return;
+      if (run) applyRunDetail(run);
+      stopRun();
+
+      if (reason === 'done') {
+        const status = run?.status || payload?.status;
+        if (!run) ElMessage.error('执行已结束，但获取执行详情失败，请点「刷新结果」重试');
+        else if (status === 'passed') ElMessage.success('执行通过');
+        else if (status === 'failed') ElMessage.warning(`执行结束：有 ${run.failed_steps ?? ''} 步失败`);
+        else if (status === 'canceled') ElMessage.info('执行已取消');
+        else ElMessage.error(`执行异常：${run.error || '未知错误'}`);
+      } else if (reason === 'timeout') {
+        ElMessage.warning('执行超过 30 分钟仍未结束，已停止刷新进度；可稍后点「刷新结果」查看');
+      } else {
+        ElMessage.error('执行进度连续 3 次获取失败，已停止刷新；执行可能仍在进行，可稍后点「刷新结果」查看');
+      }
+    },
+  });
+};
+
+// 兼容旧后端（没有执行记录接口）：只能看用例详情，间隔放宽到 3 秒，停止条件与新流程一致
+const pollLegacyCase = (caseId, seq) => {
+  const isLegacyDone = (res) => {
+    if (!res) return false;
+    if (res.status === 'failed') return true;
+    const result = res.result;
+    if (Array.isArray(result)) {
+      return result.length > 0 && result.every((step) => ['success', 'failed'].includes(step.status));
+    }
+    // 执行抛异常时旧后端把 result 写成 {error: ...}
+    return !!(result && typeof result === 'object');
+  };
+  runPoller = createPoller({
+    fetch: () => projectApi.getCase(caseId),
+    isDone: isLegacyDone,
+    interval: 3000,
+    firstDelay: 3000,
+    onStop: (reason, payload) => {
+      if (seq !== runSeq) return;
+      runPoller = null;
+      stopRun();
+      if (reason === 'done') {
+        viewLoadSeq++;
+        currentRun.value = null;
+        const result = payload.result;
+        viewSteps.value = Array.isArray(result) ? result : [];
+        selectFirstViewStep();
+        if (!Array.isArray(result)) {
+          ElMessage.error(`执行异常：${result?.error || '未知错误'}`);
+        } else if (result.some((step) => step.status === 'failed')) {
+          ElMessage.warning('执行结束：有步骤失败');
+        } else {
+          ElMessage.success('执行完成');
+        }
+      } else if (reason === 'timeout') {
+        ElMessage.warning('执行超过 30 分钟仍未结束，已停止刷新；可稍后点「刷新结果」查看');
+      } else {
+        ElMessage.error('执行状态连续 3 次获取失败，已停止刷新；可稍后点「刷新结果」查看');
+      }
+    },
+  });
+};
+
+// 发起执行（「重新执行」按钮与保存后自动执行共用，同一时间只允许一个）
+const startRunFlow = async () => {
+  const caseId = form.value.id || route.params.id;
+  if (!isViewMode.value || !caseId || runInFlight) return;
+  runInFlight = true;
+  running.value = true;
+  const seq = ++runSeq;
+  showRunLoading('正在启动用例执行，请稍候...');
+  try {
+    const { runId, legacy, conflict } = await startCaseRun(caseId);
+    if (seq !== runSeq) return;
+    if (legacy || !runId) {
+      ElMessage.warning('后端尚未升级到新的执行接口，已退回旧的执行方式（看不到逐步进度）');
+      showRunLoading('正在执行用例，请稍候...');
+      pollLegacyCase(caseId, seq);
+      return;
+    }
+    if (conflict) ElMessage.info('该用例已有执行在进行中，已接入那次执行的进度');
+    showRunLoading(progressText(null));
+    pollRunProgress(runId, seq);
+  } catch (error) {
+    if (seq !== runSeq) return;
+    console.error('启动用例执行失败:', error);
+    stopRun();
+    ElMessage.error(apiErrorText(error, '启动用例执行失败'));
+  }
+};
+
+// 重新执行用例
+const runTestCase = () => startRunFlow();
+
 // 刷新结果
 const refreshResult = async () => {
-  console.log('刷新结果', form);
-  await fetchTestCase(form.value.id);
+  await fetchTestCase(form.value.id || route.params.id);
 };
 
 // 预览并执行
 const previewAndRun = async () => {
   try {
     saving.value = true;
-    // 先保存用例
+    // 先保存用例（同样不回传执行结果和解析缓存）
+    const payload = buildCasePayload();
     if (form.value.id) {
-      await projectApi.updateCase(form.value.id, form.value);
+      await projectApi.updateCase(form.value.id, payload);
     } else {
-      const newCase = await projectApi.createCase(form.value);
+      const newCase = await projectApi.createCase(payload);
       form.value.id = newCase.id;
     }
     // 跳转到查看模式并自动执行
@@ -1416,82 +1674,13 @@ const previewAndRun = async () => {
   }
 };
 
-// 在查看模式下启动轮询
-const startPolling = (existingLoading = null) => {
-  if (!isViewMode.value) return;
-
-  // 如果传入了现有的loading，先关闭它，然后创建新的
-  let loading;
-  if (existingLoading) {
-    existingLoading.close();
-    loading = ElLoading.service({
-      lock: true,
-      text: '正在执行用例，请稍候...',
-      background: 'rgba(0, 0, 0, 0.7)',
-    });
-  } else {
-    loading = ElLoading.service({
-      lock: true,
-      text: '正在执行用例，请稍候...',
-      background: 'rgba(0, 0, 0, 0.7)',
-    });
-  }
-
-  const poll = async () => {
-    try {
-      const res = await projectApi.getCase(form.value.id);
-      if (res) {
-        form.value = { ...res, enable_ai_heal: res.enable_ai_heal ?? false };
-        // 如果执行完成，停止轮询
-        if (res.result && Array.isArray(res.result) && res.result.length > 0) {
-          const allCompleted = res.result.every((step) => step.status && ['success', 'failed'].includes(step.status));
-          if (allCompleted) {
-            loading.close(); // 关闭loading
-            return; // 停止轮询
-          }
-        }
-      }
-    } catch (error) {
-      console.error('轮询失败:', error);
-      loading.close(); // 出错时也要关闭loading
-    }
-    // 继续轮询
-    setTimeout(poll, 2000);
-  };
-
-  // 开始轮询
-  setTimeout(poll, 1000);
-};
-
-// 检查并自动执行
+// 检查并自动执行（同一条用例的一次进入只触发一次）
 const checkAndAutoRun = () => {
-  if (isViewMode.value && route.query.autoRun === 'true') {
-    // 立即显示loading，避免没有loading的问题
-    const loading = ElLoading.service({
-      lock: true,
-      text: '正在启动用例执行，请稍候...',
-      background: 'rgba(0, 0, 0, 0.7)',
-    });
-
-    setTimeout(async () => {
-      try {
-        running.value = true;
-        await projectApi.runCase({ id: form.value.id });
-        ElMessage.success('用例执行成功');
-        // 稍微延迟一下，然后将现有的loading传递给startPolling
-        setTimeout(() => {
-          startPolling(loading);
-        }, 500);
-      } catch (error) {
-        console.error('启动用例执行失败:', error);
-        loading.close();
-        ElMessage.error('启动用例执行失败');
-      } finally {
-        running.value = false;
-        loading.close();
-      }
-    }, 1000);
-  }
+  if (!(isViewMode.value && route.query.autoRun === 'true')) return;
+  const caseId = String(route.params.id || form.value.id || '');
+  if (!caseId || autoRunHandledFor === caseId) return;
+  autoRunHandledFor = caseId;
+  startRunFlow();
 };
 
 onMounted(() => {
@@ -1509,10 +1698,26 @@ watch(
   (newQuery) => {
     if (newQuery.autoRun === 'true') {
       checkAndAutoRun();
+    } else {
+      autoRunHandledFor = null;
     }
   },
   { immediate: true }
 );
+
+// 离开页面、切到另一条用例或退出查看模式时，停止轮询并关掉遮罩
+onBeforeRouteLeave(() => {
+  stopRun();
+});
+onBeforeRouteUpdate((to, from) => {
+  if (to.params.id !== from.params.id || to.query.viewMode !== from.query.viewMode) {
+    stopRun();
+  }
+});
+onBeforeUnmount(() => {
+  viewLoadSeq++;
+  stopRun();
+});
 </script>
 
 <style scoped>

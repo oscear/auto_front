@@ -81,7 +81,7 @@
       <!-- 表格视图 -->
       <div v-if="viewMode === 'table'" class="table-container">
         <el-table
-          :data="filteredTestcases"
+          :data="pagedTestcases"
           style="width: 100%"
           class="modern-table"
           empty-text="暂无数据"
@@ -135,7 +135,15 @@
             </template>
           </el-table-column>
 
-          <el-table-column label="操作" min-width="200" align="center">
+          <el-table-column label="状态" min-width="80" align="center">
+            <template #default="scope">
+              <el-tag size="small" :type="caseStatusMeta(scope.row).type" effect="light">
+                {{ caseStatusMeta(scope.row).label }}
+              </el-tag>
+            </template>
+          </el-table-column>
+
+          <el-table-column label="操作" min-width="260" align="center">
             <template #default="scope">
               <div class="action-buttons">
                 <el-button text size="small" @click.stop="handleEditNew(scope.row)" class="action-btn-text">
@@ -149,6 +157,10 @@
                 <el-button text size="small" @click.stop="handleViewResult(scope.row)" class="action-btn-text">
                   <el-icon><View /></el-icon>
                   结果
+                </el-button>
+                <el-button text size="small" @click.stop="handleViewHistory(scope.row)" class="action-btn-text">
+                  <el-icon><Clock /></el-icon>
+                  历史
                 </el-button>
                 <el-button text size="small" @click.stop="handleDelete(scope.row)" class="action-btn-text danger">
                   <el-icon><Delete /></el-icon>
@@ -164,7 +176,7 @@
       <div v-else class="cards-container">
         <div class="cases-grid">
           <el-card
-            v-for="testcase in filteredTestcases"
+            v-for="testcase in pagedTestcases"
             :key="testcase.id"
             class="case-card"
             shadow="hover"
@@ -191,6 +203,9 @@
                       <el-dropdown-item @click="handleViewResult(testcase)">
                         <el-icon><View /></el-icon>查看结果
                       </el-dropdown-item>
+                      <el-dropdown-item @click="handleViewHistory(testcase)">
+                        <el-icon><Clock /></el-icon>执行历史
+                      </el-dropdown-item>
                       <el-dropdown-item divided @click="handleDelete(testcase)">
                         <el-icon><Delete /></el-icon>删除
                       </el-dropdown-item>
@@ -204,7 +219,9 @@
               <div class="case-header-section">
                 <h3 class="case-title">{{ testcase.name }}</h3>
                 <div class="case-status">
-                  <el-tag size="small" type="success" effect="light">正常</el-tag>
+                  <el-tag size="small" :type="caseStatusMeta(testcase).type" effect="light">
+                    {{ caseStatusMeta(testcase).label }}
+                  </el-tag>
                 </div>
               </div>
               
@@ -239,14 +256,30 @@
           </el-card>
         </div>
       </div>
+
+      <div class="list-pagination">
+        <el-pagination
+          v-model:current-page="currentPage"
+          v-model:page-size="pageSize"
+          :total="filteredTestcases.length"
+          :page-sizes="[10, 20, 50, 100]"
+          layout="total, sizes, prev, pager, next, jumper"
+          background
+        />
+      </div>
     </el-card>
 
-
+    <!-- 执行历史 -->
+    <RunHistory
+      v-model="historyVisible"
+      :testcase-id="historyCase?.id"
+      :title="historyCase ? `执行历史 · ${historyCase.name}` : '执行历史'"
+    />
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, computed, nextTick, watch } from 'vue';
+import { ref, onMounted, onBeforeUnmount, computed, nextTick, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useRouter } from 'vue-router';
 import {
@@ -265,7 +298,16 @@ import {
   MoreFilled,
   Clock,
 } from '@element-plus/icons-vue';
-import { projectApi } from '@/utils/api';
+import {
+  projectApi,
+  startCaseRun,
+  createPoller,
+  runStatusMeta,
+  unwrapList,
+  apiErrorText,
+  RUN_TERMINAL_STATUS,
+} from '@/utils/api';
+import RunHistory from './components/RunHistory.vue';
 
 const router = useRouter();
 
@@ -310,6 +352,39 @@ const filteredTestcases = computed(() => {
   return filtered;
 });
 
+// 前端分页
+const currentPage = ref(1);
+const pageSize = ref(20);
+const pagedTestcases = computed(() => {
+  const start = (currentPage.value - 1) * pageSize.value;
+  return filteredTestcases.value.slice(start, start + pageSize.value);
+});
+
+// 筛选结果变少后页码越界时拉回最后一页
+watch(
+  () => [filteredTestcases.value.length, pageSize.value],
+  ([len, size]) => {
+    const maxPage = Math.max(1, Math.ceil(len / size));
+    if (currentPage.value > maxPage) currentPage.value = maxPage;
+  }
+);
+
+// 本页发起的执行：用例 id → 最新执行状态（进度接口轮询得到）
+const liveRunStatus = ref({});
+const runPollers = new Map();
+
+// 用例状态展示：优先本页刚发起的执行，其次列表带的最近执行状态，最后是用例自身 status
+const caseStatusMeta = (row) =>
+  runStatusMeta(liveRunStatus.value[row.id] || row.last_run_status || row.last_run?.status || row.status);
+
+// 执行历史抽屉
+const historyVisible = ref(false);
+const historyCase = ref(null);
+const handleViewHistory = (testcase) => {
+  historyCase.value = testcase;
+  historyVisible.value = true;
+};
+
 // 计算属性：唯一的创建人列表
 const uniqueCreators = computed(() => {
   const creators = testcases.value.map((item) => item.username).filter(Boolean);
@@ -343,12 +418,14 @@ const restoreFiltersFromStorage = () => {
 // 搜索处理
 const handleSearch = () => {
   // 搜索逻辑已在计算属性中处理
+  currentPage.value = 1;
   saveFiltersToStorage();
 };
 
 // 筛选处理
 const handleFilter = () => {
   // 筛选逻辑已在计算属性中处理
+  currentPage.value = 1;
   saveFiltersToStorage();
 };
 
@@ -398,11 +475,10 @@ const rules = {
 const fetchtestcases = async () => {
   try {
     const response = await projectApi.getCases();
-    console.log('获取到的用例列表:', response.data);
-    testcases.value = response;
+    testcases.value = unwrapList(response).items;
   } catch (error) {
     console.error('获取用例列表失败:', error);
-    ElMessage.error('用例正在执行中running,请稍后再试');
+    ElMessage.error(apiErrorText(error, '获取用例列表失败'));
   }
 };
 
@@ -410,7 +486,7 @@ const fetchtestcases = async () => {
 const fetchProjects = async () => {
   try {
     const response = await projectApi.getProjects();
-    projects.value = response;
+    projects.value = unwrapList(response).items;
   } catch (error) {
     console.error('获取项目列表失败:', error);
     ElMessage.error('获取项目列表失败');
@@ -428,10 +504,59 @@ const handleEditNew = (testcase) => {
 };
 
 // 运行用例
-const handlExecute = async (project) => {
-  console.log('运行用例', project);
-  await projectApi.runCase({'id':project.id});
-  ElMessage.success('执行成功');
+const handlExecute = async (testcase) => {
+  const caseId = testcase.id;
+  if (runPollers.has(caseId)) {
+    ElMessage.info('该用例正在执行中，可在「历史」里查看进度');
+    return;
+  }
+  try {
+    const { runId, legacy, conflict } = await startCaseRun(caseId);
+    if (legacy || !runId) {
+      ElMessage.warning('后端尚未升级到新的执行接口，已按旧方式提交执行；稍后点「结果」查看');
+      return;
+    }
+    ElMessage.success(conflict ? '该用例已有执行在进行中，已接入那次执行' : '已开始执行，可在「历史」里查看进度');
+    watchRun(testcase, runId);
+  } catch (error) {
+    console.error('执行用例失败:', error);
+    ElMessage.error(apiErrorText(error, '执行用例失败'));
+  }
+};
+
+// 轮询轻量进度接口，只更新这一行的状态；到终态/连续出错/超时/离开页面都会停
+const watchRun = (testcase, runId) => {
+  const caseId = testcase.id;
+  liveRunStatus.value = { ...liveRunStatus.value, [caseId]: 'queued' };
+  const poller = createPoller({
+    fetch: () => projectApi.getRunProgress(runId),
+    isDone: (data) => RUN_TERMINAL_STATUS.includes(data?.status),
+    onTick: (data) => {
+      if (data?.status && liveRunStatus.value[caseId] !== data.status) {
+        liveRunStatus.value = { ...liveRunStatus.value, [caseId]: data.status };
+      }
+    },
+    onStop: (reason, payload) => {
+      runPollers.delete(caseId);
+      if (reason === 'done') {
+        const meta = runStatusMeta(payload.status);
+        const text = `用例「${testcase.name}」执行结束：${meta.label}`;
+        if (payload.status === 'passed') ElMessage.success(text);
+        else ElMessage.warning(text);
+        return;
+      }
+      // 出错或超时：不再显示一个可能已经过期的"执行中"
+      const next = { ...liveRunStatus.value };
+      delete next[caseId];
+      liveRunStatus.value = next;
+      ElMessage.warning(
+        reason === 'timeout'
+          ? `用例「${testcase.name}」执行超过 30 分钟仍未结束，已停止刷新进度，请到「历史」查看`
+          : `用例「${testcase.name}」的执行进度连续获取失败，已停止刷新，请到「历史」查看`
+      );
+    },
+  });
+  runPollers.set(caseId, poller);
 };
 
 // 查看执行结果
@@ -468,6 +593,11 @@ const handleDelete = (project) => {
 watch([searchQuery, filterProject, filterCreator, viewMode], () => {
   saveFiltersToStorage();
 }, { deep: true });
+
+onBeforeUnmount(() => {
+  runPollers.forEach((poller) => poller.stop());
+  runPollers.clear();
+});
 
 onMounted(() => {
   fetchtestcases();
@@ -553,6 +683,12 @@ onMounted(() => {
   padding: 4px 10px;
   border-radius: 4px;
   font-size: 12px;
+}
+
+.list-pagination {
+  display: flex;
+  justify-content: flex-end;
+  padding: 12px 4px 4px;
 }
 
 /* 表格卡片 */

@@ -68,6 +68,138 @@ export async function parseNaturalLanguageStream(data, { onDelta, onDone, signal
   return lastDone;
 }
 
+// ───────────── UI 用例执行记录（TestRun）相关的公共工具 ─────────────
+
+// 执行记录终态
+export const RUN_TERMINAL_STATUS = ['passed', 'failed', 'error', 'canceled'];
+
+// 执行记录/用例状态 → 展示文案与 el-tag 类型（同时兼容旧的 pending/completed 取值）
+export const RUN_STATUS_META = {
+  queued: { label: '排队中', type: 'info' },
+  running: { label: '执行中', type: 'warning' },
+  passed: { label: '通过', type: 'success' },
+  failed: { label: '失败', type: 'danger' },
+  error: { label: '异常', type: 'danger' },
+  canceled: { label: '已取消', type: 'info' },
+  completed: { label: '已完成', type: 'success' },
+  pending: { label: '未执行', type: 'info' },
+};
+
+export function runStatusMeta(status) {
+  return RUN_STATUS_META[status] || { label: status || '未执行', type: 'info' };
+}
+
+// 列表接口返回数组或 {count, results} 都兼容
+export function unwrapList(res) {
+  if (Array.isArray(res)) return { items: res, total: res.length };
+  if (res && Array.isArray(res.results)) return { items: res.results, total: Number(res.count ?? res.results.length) };
+  return { items: [], total: 0 };
+}
+
+// 截图地址：新接口给 URL（绝对或相对后端），历史数据是 base64
+export function resolveScreenshot(s) {
+  if (!s || typeof s !== 'string') return '';
+  if (/^(https?:|data:|blob:)/i.test(s)) return s;
+  if (s.startsWith('/')) return `${API_BASE}${s}`;
+  if (/\.(png|jpe?g|webp|gif)(\?.*)?$/i.test(s)) return `${API_BASE}/media/${s}`;
+  return `data:image/png;base64,${s}`;
+}
+
+// 从 axios 错误里取后端给的说明
+export function apiErrorText(error, fallback = '请求失败') {
+  const data = error?.response?.data;
+  if (typeof data === 'string' && data && data.length < 200) return data;
+  return data?.detail || data?.error || data?.message || fallback;
+}
+
+/**
+ * 通用轮询器。停止条件：isDone 为真（done）、连续 maxErrors 次请求出错（error）、
+ * 超过 maxMs（timeout）、调用方 stop()（组件卸载/路由离开时必须调用，此时不回调 onStop）。
+ *
+ * @param {{fetch:()=>Promise<any>, isDone:(data:any)=>boolean, onTick?:(data:any)=>void,
+ *   onStop?:(reason:'done'|'error'|'timeout', payload:any)=>void,
+ *   interval?:number, firstDelay?:number, maxMs?:number, maxErrors?:number}} opt
+ * @returns {{stop:()=>void}}
+ */
+export function createPoller({
+  fetch: fetchFn,
+  isDone,
+  onTick,
+  onStop,
+  interval = 2000,
+  firstDelay = 1000,
+  maxMs = 30 * 60 * 1000,
+  maxErrors = 3,
+}) {
+  let stopped = false;
+  let timer = null;
+  let errors = 0;
+  const startedAt = Date.now();
+
+  const finish = (reason, payload) => {
+    if (stopped) return;
+    stopped = true;
+    if (timer) clearTimeout(timer);
+    timer = null;
+    onStop?.(reason, payload);
+  };
+
+  const tick = async () => {
+    timer = null;
+    if (stopped) return;
+    let data;
+    try {
+      data = await fetchFn();
+      errors = 0;
+    } catch (e) {
+      if (stopped) return;
+      errors += 1;
+      if (errors >= maxErrors) return finish('error', e);
+    }
+    if (stopped) return;
+    if (data !== undefined) {
+      onTick?.(data);
+      if (isDone(data)) return finish('done', data);
+    }
+    if (Date.now() - startedAt >= maxMs) return finish('timeout', data);
+    timer = setTimeout(tick, interval);
+  };
+
+  timer = setTimeout(tick, firstDelay);
+
+  return {
+    stop() {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      timer = null;
+    },
+  };
+}
+
+/**
+ * 发起一次用例执行。
+ * 新接口 POST /api/testcases/<id>/run/ → {run_id}；409 表示已有排队/执行中的记录（沿用那条 run_id）；
+ * 404 说明后端还没升级，退回旧的 POST /execute/（此时拿不到 run_id，legacy=true）。
+ *
+ * @returns {Promise<{runId:number|null, legacy:boolean, conflict:boolean}>}
+ */
+export async function startCaseRun(caseId) {
+  try {
+    const res = await request.post(`/api/testcases/${caseId}/run/`);
+    return { runId: res?.run_id ?? res?.id ?? null, legacy: false, conflict: false };
+  } catch (e) {
+    const status = e?.response?.status;
+    if (status === 409 && e.response.data?.run_id != null) {
+      return { runId: e.response.data.run_id, legacy: false, conflict: true };
+    }
+    if (status === 404) {
+      await request.post('/execute/', { id: caseId });
+      return { runId: null, legacy: true, conflict: false };
+    }
+    throw e;
+  }
+}
+
 export const projectApi = {
   // 用户登录
   login: (data) => request.post('login/', data),
@@ -110,11 +242,26 @@ export const projectApi = {
   // 删除用例
   deleteCase: (id) => request.delete(`/api/testcases/${id}/`),
 
-  //执行用例
+  // 执行用例（旧流程，仅作为新接口 404 时的兼容；页面请用 startCaseRun）
   runCase: (data) => request.post(`/execute/`, data),
 
-  //获取用例结果
-  getCaseResult: (id) => request.get(`/api/testcases/${id}/result/`),
+  // 获取用例结果（后端路由不在 /api/ 下）
+  getCaseResult: (id) => request.get(`/testcases/${id}/result/`),
+
+  // 执行记录列表（分页：testcase / status / task / page / page_size）
+  getRuns: (params) => request.get('/api/runs/', { params }),
+
+  // 执行记录详情（含步骤与截图地址）
+  getRun: (id) => request.get(`/api/runs/${id}/`),
+
+  // 执行进度（轻量，只有状态和计数，轮询用）
+  getRunProgress: (id) => request.get(`/api/runs/${id}/progress/`),
+
+  // 取消执行
+  cancelRun: (id) => request.post(`/api/runs/${id}/cancel/`),
+
+  // 接口场景列表（定时任务里选择接口场景用）
+  getApiScenarios: (params) => request.get('/api/automation/scenarios/', { params }),
 
   // 获取Tasks列表
   getTasks: () => request.get('/api/tasks/'),

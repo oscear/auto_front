@@ -15,13 +15,14 @@
       <el-table-column prop="feishu_webhook" label="飞书地址" />
       <el-table-column prop="last_run" label="上次运行" />
       <el-table-column prop="next_run" label="下次运行" />
-      <el-table-column label="操作" width="300">
+      <el-table-column label="操作" width="380">
         <template #default="scope">
           <el-button size="small" @click="handleEdit(scope.row)">编辑</el-button>
           <el-button size="small" :type="scope.row.is_active ? 'info' : 'success'" @click="handleStart(scope.row)">
             {{ scope.row.is_active ? '关闭' : '启动' }}
           </el-button>
-          <el-button size="small" @click="handleRun(scope.row)">运行</el-button>
+          <el-button size="small" :loading="runningTaskId === scope.row.id" @click="handleRun(scope.row)">运行</el-button>
+          <el-button size="small" @click="openRuns(scope.row)">执行记录</el-button>
           <el-button size="small" type="danger" @click="handleDelete(scope.row)">删除</el-button>
         </template>
       </el-table-column>
@@ -104,6 +105,19 @@
           </el-select>
         </el-form-item>
 
+        <el-form-item label="接口场景">
+          <el-select
+            v-model="form.api_scenario_ids"
+            placeholder="可选：任务执行时一并运行的接口场景"
+            multiple
+            filterable
+            clearable
+            no-data-text="暂无接口场景"
+          >
+            <el-option v-for="item in apiScenarios" :key="item.id" :label="item.name" :value="item.id" />
+          </el-select>
+        </el-form-item>
+
         <el-form-item label="飞书Webhook">
           <el-input v-model="form.feishu_webhook" type="textarea" rows="3" />
         </el-form-item>
@@ -113,17 +127,29 @@
         <el-button type="primary" @click="submitForm">确认</el-button>
       </template>
     </el-dialog>
+
+    <!-- 任务的执行记录 -->
+    <RunHistory
+      v-model="runsVisible"
+      :task-id="runsTask?.id"
+      :title="runsTask ? `执行记录 · ${runsTask.name}` : '执行记录'"
+    />
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted, computed } from 'vue';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ElMessage, ElMessageBox, ElNotification } from 'element-plus';
 import { Rank, Plus, MagicStick, Star } from '@element-plus/icons-vue';
-import { projectApi } from '@/utils/api';
+import { projectApi, unwrapList, apiErrorText } from '@/utils/api';
+import RunHistory from './components/RunHistory.vue';
 
 const tasks = ref([]);
 const testCases = ref([]);
+const apiScenarios = ref([]);
+const runningTaskId = ref(null);
+const runsVisible = ref(false);
+const runsTask = ref(null);
 const showDialog = ref(false);
 const isEditMode = ref(false);
 const showCronDialog = ref(false);
@@ -149,6 +175,7 @@ const form = ref({
   name: '',
   schedule: '',
   test_cases: [],
+  api_scenario_ids: [],
   feishu_webhook: '',
 });
 
@@ -157,7 +184,7 @@ const dialogTitle = computed(() => (isEditMode.value ? '编辑任务' : '新增�
 const fetchTasks = async () => {
   try {
     const response = await projectApi.getTasks();
-    tasks.value = response;
+    tasks.value = unwrapList(response).items;
   } catch (error) {
     console.error('获取任务列表失败:', error);
     ElMessage.error('获取任务列表失败');
@@ -167,15 +194,33 @@ const fetchTasks = async () => {
 const fetchTestCases = async () => {
   try {
     const response = await projectApi.getCases();
-    testCases.value = response;
+    testCases.value = unwrapList(response).items;
   } catch (error) {
     console.error('获取用例列表失败:', error);
   }
 };
 
+// 接口场景列表：接口还没有（404）或出错时保持为空，不提示
+const fetchApiScenarios = async () => {
+  try {
+    const response = await projectApi.getApiScenarios();
+    apiScenarios.value = unwrapList(response).items;
+  } catch (error) {
+    apiScenarios.value = [];
+  }
+};
+
+const openRuns = (task) => {
+  runsTask.value = task;
+  runsVisible.value = true;
+};
+
 const handleEdit = (task) => {
   isEditMode.value = true;
-  form.value = { ...task };
+  form.value = {
+    ...task,
+    api_scenario_ids: Array.isArray(task.api_scenario_ids) ? [...task.api_scenario_ids] : [],
+  };
   showDialog.value = true;
 };
 
@@ -226,23 +271,43 @@ const handleStart = async (task) => {
   }
 };
 
+// 立即执行：新后端提交后马上返回；提示已开始，并可点通知跳到该任务的执行记录
 const handleRun = async (task) => {
+  if (runningTaskId.value) return;
+  runningTaskId.value = task.id;
+  const notifyStarted = (message) => {
+    const n = ElNotification({
+      title: `任务「${task.name}」已开始执行`,
+      message,
+      type: 'success',
+      duration: 8000,
+      onClick: () => {
+        n.close();
+        openRuns(task);
+      },
+    });
+  };
   try {
-    const res = await projectApi.runTask({ task_id: task.id });
-    console.log(res);
-    ElMessage.success(res.message);
+    await projectApi.runTask({ task_id: task.id });
+    notifyStarted('点击此处查看执行记录');
     fetchTasks(); // 刷新任务列表
   } catch (error) {
     console.error('执行任务失败:', error);
-    if (error !== 'cancel') {
-      ElMessage.error('执行任务失败');
+    if (error?.code === 'ECONNABORTED' || /timeout/i.test(error?.message || '')) {
+      // 旧版后端在请求里同步跑完整个任务，等待超时不代表失败
+      ElMessage.warning('任务已提交，后端仍在执行中（旧版后端会同步执行，等待超时不代表失败），请稍后查看执行记录');
+    } else {
+      ElMessage.error(apiErrorText(error, '执行任务失败'));
     }
+  } finally {
+    runningTaskId.value = null;
   }
 };
 
 onMounted(() => {
   fetchTasks();
   fetchTestCases();
+  fetchApiScenarios();
 });
 </script>
 
