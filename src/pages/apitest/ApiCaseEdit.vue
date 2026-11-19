@@ -14,6 +14,10 @@
         </div>
       </div>
       <div class="toolbar-right">
+        <el-button @click="curlDialogVisible = true" class="ghost-btn">
+          <el-icon><Download /></el-icon>
+          <span>从 curl 导入</span>
+        </el-button>
         <el-button @click="handleBack" class="ghost-btn">取消</el-button>
         <el-button type="primary" @click="handleSave" :loading="saveLoading" class="primary-btn">
           <el-icon><Check /></el-icon>
@@ -33,16 +37,22 @@
           <el-input v-model="formData.name" placeholder="给用例起一个清晰的名称" style="width: 260px" />
         </el-form-item>
         <el-form-item label="所属项目">
-          <el-select v-model="formData.project" placeholder="选择项目" style="width: 180px">
+          <el-select v-model="formData.project" placeholder="选择项目" style="width: 180px" @change="onProjectChange">
             <el-option v-for="project in projects" :key="project.id" :label="project.name" :value="project.id" />
           </el-select>
         </el-form-item>
         <el-form-item label="优先级">
-          <el-select v-model="formData.priority" style="width: 120px">
+          <el-select v-model="formData.priority" style="width: 100px">
             <el-option label="高" value="high" />
             <el-option label="中" value="medium" />
             <el-option label="低" value="low" />
           </el-select>
+        </el-form-item>
+        <el-form-item label="超时(毫秒)">
+          <el-input-number v-model="formData.timeout_ms" :min="100" :max="600000" :step="1000" controls-position="right" style="width: 140px" />
+        </el-form-item>
+        <el-form-item label="描述">
+          <el-input v-model="formData.description" placeholder="选填" style="width: 260px" />
         </el-form-item>
       </el-form>
     </section>
@@ -56,14 +66,23 @@
         </el-select>
         <el-input
           v-model="formData.url"
-          placeholder="https://api.example.com/endpoint"
+          placeholder="完整地址，或 /相对路径（拼环境的基础地址），可用 {{变量}}"
           class="url-input"
         >
           <template #prefix>
             <el-icon><Link /></el-icon>
           </template>
         </el-input>
-        <el-tag size="small" class="protocol-tag">HTTP/1.1</el-tag>
+        <el-select
+          v-model="selectedEnvId"
+          class="env-select"
+          placeholder="环境"
+          :disabled="!formData.project"
+          :title="formData.project ? '发送时使用的环境' : '先选择所属项目'"
+        >
+          <el-option :label="defaultEnvLabel" :value="0" />
+          <el-option v-for="env in envs" :key="env.id" :label="env.name + (env.is_default ? '（默认）' : '')" :value="env.id" />
+        </el-select>
         <el-button type="primary" @click="handleSend" :loading="sendLoading" class="send-btn">
           <el-icon v-if="!sendLoading"><Promotion /></el-icon>
           <span>发送请求</span>
@@ -80,40 +99,7 @@
                 <span v-if="headerCount" class="count-badge">{{ headerCount }}</span>
               </span>
             </template>
-            <div class="params-table">
-              <div class="table-row table-header">
-                <div class="col-checkbox"></div>
-                <div class="col-key">KEY</div>
-                <div class="col-value">VALUE</div>
-                <div class="col-desc">DESCRIPTION</div>
-                <div class="col-action"></div>
-              </div>
-              <div v-for="(header, index) in headers" :key="index" class="table-row">
-                <div class="col-checkbox">
-                  <el-checkbox v-model="header.enabled" />
-                </div>
-                <div class="col-key">
-                  <el-input v-model="header.key" placeholder="Key" size="small" />
-                </div>
-                <div class="col-value">
-                  <el-input v-model="header.value" placeholder="Value" size="small" />
-                </div>
-                <div class="col-desc">
-                  <el-input v-model="header.description" placeholder="Description" size="small" />
-                </div>
-                <div class="col-action">
-                  <el-button @click="removeHeader(index)" size="small" text class="row-del-btn">
-                    <el-icon><Delete /></el-icon>
-                  </el-button>
-                </div>
-              </div>
-              <div class="table-footer">
-                <el-button @click="addHeader" text type="primary" class="add-row-btn">
-                  <el-icon><Plus /></el-icon>
-                  添加 Header
-                </el-button>
-              </div>
-            </div>
+            <KvEditor v-model="headers" show-desc add-text="添加 Header" empty-text="没有请求头（环境里配的默认请求头会自动带上）" />
           </el-tab-pane>
 
           <el-tab-pane name="query">
@@ -123,40 +109,7 @@
                 <span v-if="queryCount" class="count-badge">{{ queryCount }}</span>
               </span>
             </template>
-            <div class="params-table">
-              <div class="table-row table-header">
-                <div class="col-checkbox"></div>
-                <div class="col-key">KEY</div>
-                <div class="col-value">VALUE</div>
-                <div class="col-desc">DESCRIPTION</div>
-                <div class="col-action"></div>
-              </div>
-              <div v-for="(param, index) in queryParams" :key="index" class="table-row">
-                <div class="col-checkbox">
-                  <el-checkbox v-model="param.enabled" />
-                </div>
-                <div class="col-key">
-                  <el-input v-model="param.key" placeholder="Key" size="small" />
-                </div>
-                <div class="col-value">
-                  <el-input v-model="param.value" placeholder="Value" size="small" />
-                </div>
-                <div class="col-desc">
-                  <el-input v-model="param.description" placeholder="Description" size="small" />
-                </div>
-                <div class="col-action">
-                  <el-button @click="removeQueryParam(index)" size="small" text class="row-del-btn">
-                    <el-icon><Delete /></el-icon>
-                  </el-button>
-                </div>
-              </div>
-              <div class="table-footer">
-                <el-button @click="addQueryParam" text type="primary" class="add-row-btn">
-                  <el-icon><Plus /></el-icon>
-                  添加 Query
-                </el-button>
-              </div>
-            </div>
+            <KvEditor v-model="queryParams" show-desc add-text="添加 Query" empty-text="没有查询参数" />
           </el-tab-pane>
 
           <el-tab-pane name="body">
@@ -184,6 +137,7 @@
                 <span>{{ type.label }}</span>
               </label>
               <div class="body-types-spacer"></div>
+              <el-button v-if="bodyType === 'raw' && rawType === 'json'" text size="small" @click="formatJson">格式化</el-button>
               <el-select v-if="bodyType === 'raw'" v-model="rawType" size="small" class="raw-type-select">
                 <el-option label="JSON" value="json" />
                 <el-option label="XML" value="xml" />
@@ -195,47 +149,20 @@
             <!-- Body内容 -->
             <div class="body-content">
               <!-- form-data / urlencoded -->
-              <div v-if="bodyType === 'form-data' || bodyType === 'urlencoded'" class="params-table">
-                <div class="table-row table-header">
-                  <div class="col-checkbox"></div>
-                  <div class="col-key">KEY</div>
-                  <div class="col-value">VALUE</div>
-                  <div class="col-desc">DESCRIPTION</div>
-                  <div class="col-action"></div>
-                </div>
-                <div v-for="(param, index) in bodyParams" :key="index" class="table-row">
-                  <div class="col-checkbox">
-                    <el-checkbox v-model="param.enabled" />
-                  </div>
-                  <div class="col-key">
-                    <el-input v-model="param.key" placeholder="Key" size="small" />
-                  </div>
-                  <div class="col-value">
-                    <el-input v-model="param.value" placeholder="Value" size="small" />
-                  </div>
-                  <div class="col-desc">
-                    <el-input v-model="param.description" placeholder="Description" size="small" />
-                  </div>
-                  <div class="col-action">
-                    <el-button @click="removeBodyParam(index)" size="small" text class="row-del-btn">
-                      <el-icon><Delete /></el-icon>
-                    </el-button>
-                  </div>
-                </div>
-                <div class="table-footer">
-                  <el-button @click="addBodyParam" text type="primary" class="add-row-btn">
-                    <el-icon><Plus /></el-icon>
-                    添加参数
-                  </el-button>
-                </div>
-              </div>
+              <KvEditor
+                v-if="bodyType === 'form-data' || bodyType === 'urlencoded'"
+                v-model="bodyParams"
+                show-desc
+                add-text="添加参数"
+                empty-text="没有表单参数"
+              />
 
               <!-- raw -->
               <div v-else-if="bodyType === 'raw'" class="raw-editor">
                 <div class="editor-toolbar">
                   <span class="editor-hint">
                     <el-icon><InfoFilled /></el-icon>
-                    支持粘贴格式化的 {{ rawType.toUpperCase() }} 内容
+                    {{ rawHint }}
                   </span>
                 </div>
                 <div class="code-editor">
@@ -253,7 +180,7 @@
                 </div>
               </div>
 
-              <!-- none / binary / msgpack -->
+              <!-- none -->
               <div v-else class="empty-body">
                 <el-icon class="empty-icon"><Document /></el-icon>
                 <p class="empty-title">此请求没有 Body</p>
@@ -262,82 +189,134 @@
             </div>
           </el-tab-pane>
 
-          <el-tab-pane label="认证" name="auth">
-            <div class="placeholder-content">
-              <el-icon class="placeholder-icon"><Lock /></el-icon>
-              <p class="placeholder-title">认证配置</p>
-              <span class="placeholder-desc">配置 Basic、Bearer Token、OAuth 等认证方式</span>
-            </div>
+          <el-tab-pane name="auth">
+            <template #label>
+              <span class="tab-label">
+                认证
+                <span v-if="auth.type !== 'none'" class="count-badge">{{ authTypeLabel }}</span>
+              </span>
+            </template>
+            <el-form label-width="90px" class="auth-form">
+              <el-form-item label="认证方式">
+                <el-radio-group v-model="auth.type">
+                  <el-radio-button v-for="t in authTypes" :key="t.value" :value="t.value">{{ t.label }}</el-radio-button>
+                </el-radio-group>
+              </el-form-item>
+              <template v-if="auth.type === 'bearer'">
+                <el-form-item label="Token">
+                  <el-input v-model="auth.token" placeholder="如 {{token}}，发送时加到 Authorization: Bearer …" />
+                </el-form-item>
+              </template>
+              <template v-else-if="auth.type === 'basic'">
+                <el-form-item label="用户名">
+                  <el-input v-model="auth.username" placeholder="可用 {{变量}}" />
+                </el-form-item>
+                <el-form-item label="密码">
+                  <el-input v-model="auth.password" placeholder="建议写成环境变量，如 {{password}}" show-password />
+                </el-form-item>
+              </template>
+              <template v-else-if="auth.type === 'header'">
+                <el-form-item label="请求头名">
+                  <el-input v-model="auth.key" placeholder="如 la517-authsign" />
+                </el-form-item>
+                <el-form-item label="请求头值">
+                  <el-input v-model="auth.value" placeholder="可用 {{变量}}" />
+                </el-form-item>
+              </template>
+              <div v-else class="auth-tip">不使用认证。需要每个接口都带的头，可以放到环境的默认请求头里。</div>
+              <div v-if="auth.type !== 'none'" class="auth-tip">
+                值里可以用变量；认证产生的请求头在执行记录里会打码。
+              </div>
+            </el-form>
           </el-tab-pane>
 
-          <el-tab-pane label="Cookie" name="cookie">
-            <div class="placeholder-content">
-              <el-icon class="placeholder-icon"><Stamp /></el-icon>
-              <p class="placeholder-title">Cookie 配置</p>
-              <span class="placeholder-desc">管理请求携带的 Cookie</span>
-            </div>
+          <el-tab-pane name="assertions">
+            <template #label>
+              <span class="tab-label">
+                断言
+                <span v-if="assertionCount" class="count-badge">{{ assertionCount }}</span>
+              </span>
+            </template>
+            <AssertionEditor v-model="assertions" />
           </el-tab-pane>
 
-          <el-tab-pane label="预执行" name="pre-script">
-            <div class="placeholder-content">
-              <el-icon class="placeholder-icon"><VideoPlay /></el-icon>
-              <p class="placeholder-title">预执行脚本</p>
-              <span class="placeholder-desc">请求发送前执行的 JavaScript 脚本</span>
-            </div>
+          <el-tab-pane name="extractors">
+            <template #label>
+              <span class="tab-label">
+                提取变量
+                <span v-if="extractorCount" class="count-badge">{{ extractorCount }}</span>
+              </span>
+            </template>
+            <ExtractorEditor v-model="extractors" />
           </el-tab-pane>
 
-          <el-tab-pane label="后执行" name="post-script">
-            <div class="placeholder-content">
-              <el-icon class="placeholder-icon"><VideoPause /></el-icon>
-              <p class="placeholder-title">后执行脚本</p>
-              <span class="placeholder-desc">请求响应后执行的 JavaScript 脚本</span>
-            </div>
+          <el-tab-pane name="variables">
+            <template #label>
+              <span class="tab-label">
+                调试变量
+                <span v-if="debugVarCount" class="count-badge">{{ debugVarCount }}</span>
+              </span>
+            </template>
+            <KvEditor
+              v-model="debugVariables"
+              key-label="变量名"
+              value-label="值"
+              key-placeholder="如 token"
+              value-placeholder="值"
+              add-text="添加变量"
+              empty-text="没有调试变量"
+              hint="只在本页点「发送请求」时生效，不随用例保存；优先于环境变量"
+            />
           </el-tab-pane>
         </el-tabs>
       </div>
     </section>
 
     <!-- 响应区域 -->
-    <section v-if="response" class="response-card">
+    <section v-if="debugResult" class="response-card">
       <div class="response-header">
         <div class="response-info">
-          <div class="status-badge" :class="getStatusClass(response.status)">
+          <div class="status-badge" :class="getStatusClass(responseStatus)">
             <span class="status-dot"></span>
-            <span class="status-label">{{ response.status || 'ERR' }}</span>
-            <span class="status-text">{{ getStatusText(response.status) }}</span>
+            <span class="status-label">{{ responseStatus || 'ERR' }}</span>
+            <span class="status-text">{{ getStatusText(responseStatus) }}</span>
           </div>
+          <el-tag :type="statusTagType(debugResult.status)" size="small" effect="light">
+            {{ debugResultText }}
+          </el-tag>
           <div class="meta-item">
             <el-icon><Timer /></el-icon>
-            <span>{{ response.time }} ms</span>
+            <span>{{ debugResult.duration_ms }} ms</span>
           </div>
           <div class="meta-item">
             <el-icon><DataLine /></el-icon>
-            <span>{{ response.size }}</span>
+            <span>{{ formatSize(debugResult.response?.size) }}</span>
           </div>
-        </div>
-        <div class="response-actions">
-          <el-button text size="small" @click="copyResponse">
-            <el-icon><CopyDocument /></el-icon>
-            复制
-          </el-button>
+          <div class="meta-item" v-if="debugResult.env">
+            <span>环境：{{ debugResult.env.name }}</span>
+          </div>
         </div>
       </div>
       <div class="response-content">
-        <el-tabs class="response-tabs">
-          <el-tab-pane label="Body" name="body">
-            <pre class="response-body">{{ formatResponseBody(response.data) }}</pre>
-          </el-tab-pane>
-          <el-tab-pane label="Headers" name="headers">
-            <div class="response-headers">
-              <div v-for="(value, key) in response.headers" :key="key" class="header-item">
-                <span class="header-key">{{ key }}</span>
-                <span class="header-value">{{ value }}</span>
-              </div>
-            </div>
-          </el-tab-pane>
-        </el-tabs>
+        <StepResult :step="debugResult" />
       </div>
     </section>
+
+    <!-- 从 curl 导入 -->
+    <el-dialog v-model="curlDialogVisible" title="从 curl 导入" width="680px">
+      <el-input
+        v-model="curlText"
+        type="textarea"
+        :rows="12"
+        placeholder="粘贴一条 curl 命令（浏览器开发者工具里「复制为 cURL」的内容即可）"
+        class="curl-textarea"
+      />
+      <div class="curl-tip">导入会覆盖当前页面上的地址、方法、请求头、查询参数、请求体和认证，断言和提取器保留；导入后还需要点保存。</div>
+      <template #footer>
+        <el-button @click="curlDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="curlLoading" @click="handleImportCurl">解析并填入</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -346,11 +325,15 @@ import { ref, onMounted, computed, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import {
-  ArrowLeft, Delete, Check, Link, Promotion, InfoFilled,
-  Document, Lock, Stamp, VideoPlay, VideoPause, Timer,
-  DataLine, CopyDocument, Plus,
+  ArrowLeft, Check, Link, Promotion, InfoFilled,
+  Document, Timer, DataLine, Download,
 } from '@element-plus/icons-vue';
-import { apiTestApi } from '@/utils/api';
+import { apiTestApi } from '@/utils/apiTestApi';
+import KvEditor from './components/KvEditor.vue';
+import AssertionEditor from './components/AssertionEditor.vue';
+import ExtractorEditor from './components/ExtractorEditor.vue';
+import StepResult from './components/StepResult.vue';
+import { errorMessage, formatSize, objectToRows, rowsToObject, statusTagType } from './common';
 
 const route = useRoute();
 const router = useRouter();
@@ -362,10 +345,15 @@ const sendLoading = ref(false);
 const activeTab = ref('header');
 const bodyType = ref('none');
 const rawType = ref('json');
-const rawContent = ref('{\n  "username": "admin",\n  "password": "123"\n}');
+const rawContent = ref('');
 const lineCount = ref(4);
-const response = ref(null);
+const debugResult = ref(null);
 const projects = ref([]);
+const envs = ref([]);
+const selectedEnvId = ref(0);
+const curlDialogVisible = ref(false);
+const curlText = ref('');
+const curlLoading = ref(false);
 
 // 表单数据
 const formData = ref({
@@ -376,6 +364,7 @@ const formData = ref({
   method: 'POST',
   priority: 'medium',
   is_active: true,
+  timeout_ms: 30000,
 });
 
 // 请求方法
@@ -389,20 +378,29 @@ const methods = [
   { label: 'OPTIONS', value: 'OPTIONS' },
 ];
 
-// Body类型
+// Body类型（界面上的分法；保存时映射成后端的 body_type）
 const bodyTypes = [
   { label: 'none', value: 'none' },
   { label: 'form-data', value: 'form-data' },
   { label: 'urlencoded', value: 'urlencoded' },
-  { label: 'binary', value: 'binary' },
-  { label: 'msgpack', value: 'msgpack' },
   { label: 'raw', value: 'raw' },
+];
+
+const authTypes = [
+  { label: '不使用', value: 'none' },
+  { label: 'Bearer Token', value: 'bearer' },
+  { label: 'Basic', value: 'basic' },
+  { label: '自定义请求头', value: 'header' },
 ];
 
 // 参数数据
 const headers = ref([]);
 const queryParams = ref([]);
 const bodyParams = ref([]);
+const debugVariables = ref([]);
+const auth = ref({ type: 'none', token: '', username: '', password: '', key: '', value: '' });
+const assertions = ref([]);
+const extractors = ref([]);
 
 // 计数
 const headerCount = computed(() => headers.value.filter(p => p.enabled && p.key).length);
@@ -415,6 +413,27 @@ const bodyParamCount = computed(() => {
     return 1;
   }
   return 0;
+});
+const assertionCount = computed(() => assertions.value.filter(a => a.enabled !== false).length);
+const extractorCount = computed(() => extractors.value.filter(e => e.enabled !== false && e.name).length);
+const debugVarCount = computed(() => debugVariables.value.filter(p => p.enabled && p.key).length);
+const authTypeLabel = computed(() => authTypes.find(t => t.value === auth.value.type)?.label || '');
+const defaultEnvLabel = computed(() => (envs.value.some(e => e.is_default) ? '项目默认环境' : '不使用环境'));
+const rawHint = computed(() =>
+  rawType.value === 'json'
+    ? '写 JSON；可以用 {{变量}}，数字型变量不用加引号，如 {"id": {{id}}}'
+    : `按 ${rawType.value.toUpperCase()} 文本原样发送，可以用 {{变量}}`
+);
+
+const responseStatus = computed(() => debugResult.value?.response?.status_code || 0);
+const debugResultText = computed(() => {
+  const r = debugResult.value;
+  if (!r) return '';
+  if (r.status === 'error') return '请求失败';
+  const list = r.assertions || [];
+  if (!list.length) return r.status === 'passed' ? '已发送（没有断言）' : '未通过';
+  const ok = list.filter(a => a.passed).length;
+  return `断言 ${ok}/${list.length} 通过`;
 });
 
 // 初始化
@@ -434,26 +453,113 @@ const checkEditMode = () => {
 
 const fetchProjects = async () => {
   try {
-    const resp = await apiTestApi.getProjects();
-    projects.value = resp;
+    projects.value = await apiTestApi.getProjects();
   } catch (error) {
     console.error('获取项目列表失败:', error);
   }
 };
 
+const fetchEnvs = async (projectId) => {
+  envs.value = [];
+  if (!projectId) return;
+  try {
+    envs.value = await apiTestApi.getEnvironments({ project: projectId });
+  } catch (error) {
+    console.error('获取环境列表失败:', error);
+  }
+  if (!envs.value.some(e => e.id === selectedEnvId.value)) selectedEnvId.value = 0;
+};
+
+const onProjectChange = (projectId) => {
+  selectedEnvId.value = 0;
+  fetchEnvs(projectId);
+};
+
+// 后端的请求体 -> 界面上的类型和内容
+const applyBody = (type, body) => {
+  const isEmpty = body === null || body === undefined || body === '' ||
+    (typeof body === 'object' && !Array.isArray(body) && Object.keys(body).length === 0);
+  bodyParams.value = [];
+  rawContent.value = '';
+  if (type === 'none') {
+    bodyType.value = 'none';
+  } else if (type === 'form-data' || type === 'urlencoded') {
+    if (body && typeof body === 'object' && !Array.isArray(body)) {
+      bodyType.value = type;
+      bodyParams.value = objectToRows(body);
+    } else {
+      bodyType.value = 'raw';
+      rawType.value = 'text';
+      rawContent.value = isEmpty ? '' : String(body);
+    }
+  } else if (type === 'xml' || type === 'html' || type === 'text') {
+    bodyType.value = 'raw';
+    rawType.value = type;
+    rawContent.value = isEmpty ? '' : (typeof body === 'string' ? body : JSON.stringify(body, null, 2));
+  } else {
+    // json（也是老数据的默认值）
+    bodyType.value = isEmpty ? 'none' : 'raw';
+    rawType.value = 'json';
+    rawContent.value = isEmpty ? '' : (typeof body === 'string' ? body : JSON.stringify(body, null, 2));
+  }
+  updateLineCount();
+};
+
+// 界面上的请求体 -> 后端的 { body_type, body }
+const collectBody = () => {
+  if (bodyType.value === 'form-data' || bodyType.value === 'urlencoded') {
+    return { body_type: bodyType.value, body: rowsToObject(bodyParams.value) };
+  }
+  if (bodyType.value === 'raw') {
+    const text = rawContent.value;
+    if (!text.trim()) return { body_type: 'none', body: {} };
+    if (rawType.value === 'json') {
+      // 能解析就存成对象；带不加引号的变量时解析不了，按文本存，执行时替换完变量再解析
+      try {
+        return { body_type: 'json', body: JSON.parse(text) };
+      } catch (e) {
+        return { body_type: 'json', body: text };
+      }
+    }
+    return { body_type: rawType.value, body: text };
+  }
+  return { body_type: 'none', body: {} };
+};
+
 const fetchCaseData = async (id) => {
   try {
     const resp = await apiTestApi.getApiCase(id);
-    formData.value = { ...resp };
-    convertObjectToParams(resp.headers || {}, 'headers');
-    convertObjectToParams(resp.params || {}, 'query');
-    if (resp.body && typeof resp.body === 'object') {
-      rawContent.value = JSON.stringify(resp.body, null, 2);
-      bodyType.value = 'raw';
-      rawType.value = 'json';
-    }
+    formData.value = {
+      name: resp.name,
+      project: resp.project ?? '',
+      description: resp.description || '',
+      url: resp.url,
+      method: resp.method,
+      priority: resp.priority,
+      is_active: resp.is_active,
+      timeout_ms: resp.timeout_ms || 30000,
+    };
+    headers.value = objectToRows(resp.headers);
+    queryParams.value = objectToRows(resp.params);
+    applyBody(resp.body_type || 'json', resp.body);
+    auth.value = { type: 'none', token: '', username: '', password: '', key: '', value: '', ...(resp.auth || {}) };
+    if (!auth.value.type) auth.value.type = 'none';
+    const savedAssertions = (resp.assertions || []).map(a => ({
+      type: a.type, expr: a.expr || '', op: a.op || 'eq',
+      expected: a.expected === null || a.expected === undefined ? '' : (typeof a.expected === 'object' ? JSON.stringify(a.expected) : String(a.expected)),
+      enabled: a.enabled !== false,
+    }));
+    // 老用例没有断言列表，执行时按「期望状态码」判定；这里显示出来，保存后就成了正式的断言
+    assertions.value = savedAssertions.length
+      ? savedAssertions
+      : [{ type: 'status', expr: '', op: 'eq', expected: String(resp.expected_status_code || 200), enabled: true }];
+    extractors.value = (resp.extractors || []).map(e => ({
+      name: e.name || '', from: e.from || 'json', expr: e.expr || '', enabled: e.enabled !== false,
+    }));
+    fetchEnvs(resp.project);
   } catch (error) {
     console.error('获取用例数据失败:', error);
+    ElMessage.error(errorMessage(error, '获取用例数据失败'));
   }
 };
 
@@ -464,31 +570,10 @@ const initDefaultData = () => {
     ];
     bodyType.value = 'raw';
     rawType.value = 'json';
+    rawContent.value = '{\n  \n}';
+    assertions.value = [{ type: 'status', expr: '', op: 'eq', expected: '200', enabled: true }];
   }
 };
-
-const convertObjectToParams = (obj, type) => {
-  const params = Object.entries(obj).map(([key, value]) => ({
-    key, value: String(value), description: '', enabled: true,
-  }));
-  if (type === 'headers') headers.value = params;
-  else if (type === 'query') queryParams.value = params;
-};
-
-const convertParamsToObject = (params) => {
-  const obj = {};
-  params.forEach(param => {
-    if (param.enabled && param.key) obj[param.key] = param.value;
-  });
-  return obj;
-};
-
-const addHeader = () => headers.value.push({ key: '', value: '', description: '', enabled: true });
-const addQueryParam = () => queryParams.value.push({ key: '', value: '', description: '', enabled: true });
-const addBodyParam = () => bodyParams.value.push({ key: '', value: '', description: '', enabled: true });
-const removeHeader = (i) => headers.value.splice(i, 1);
-const removeQueryParam = (i) => queryParams.value.splice(i, 1);
-const removeBodyParam = (i) => bodyParams.value.splice(i, 1);
 
 const onBodyTypeChange = () => {
   if (bodyType.value === 'raw' && !rawContent.value) {
@@ -501,7 +586,52 @@ const updateLineCount = () => {
   lineCount.value = Math.max(4, rawContent.value.split('\n').length);
 };
 
-// 发送请求
+const formatJson = () => {
+  try {
+    rawContent.value = JSON.stringify(JSON.parse(rawContent.value), null, 2);
+  } catch (e) {
+    ElMessage.warning('不是合法的 JSON（带不加引号的变量时无法格式化）');
+  }
+};
+
+const collectAuth = () => {
+  const a = auth.value;
+  if (a.type === 'bearer') return { type: 'bearer', token: a.token };
+  if (a.type === 'basic') return { type: 'basic', username: a.username, password: a.password };
+  if (a.type === 'header') return { type: 'header', key: a.key, value: a.value };
+  return { type: 'none' };
+};
+
+const collectAssertions = () =>
+  assertions.value.map(a => {
+    const item = { type: a.type, expr: a.expr || '', op: a.op, expected: a.expected ?? '' };
+    if (a.enabled === false) item.enabled = false;
+    return item;
+  });
+
+const collectExtractors = () =>
+  extractors.value
+    .filter(e => (e.name || '').trim() || (e.expr || '').trim())
+    .map(e => {
+      const item = { name: (e.name || '').trim(), from: e.from, expr: e.expr || '' };
+      if (e.enabled === false) item.enabled = false;
+      return item;
+    });
+
+// 请求相关的字段（保存和发送共用）
+const collectRequest = () => ({
+  url: (formData.value.url || '').trim(),
+  method: formData.value.method,
+  headers: rowsToObject(headers.value),
+  params: rowsToObject(queryParams.value),
+  ...collectBody(),
+  auth: collectAuth(),
+  assertions: collectAssertions(),
+  extractors: collectExtractors(),
+  timeout_ms: formData.value.timeout_ms || 30000,
+});
+
+// 发送请求：由后端代发（不受浏览器跨域限制），返回响应、断言结果和提取到的变量；不保存用例
 const handleSend = async () => {
   if (!formData.value.url) {
     ElMessage.error('请输入请求URL');
@@ -509,99 +639,24 @@ const handleSend = async () => {
   }
 
   sendLoading.value = true;
-  const startTime = Date.now();
-
   try {
-    const requestHeaders = convertParamsToObject(headers.value);
-    const requestQueryParams = convertParamsToObject(queryParams.value);
-    let requestBody = null;
-
-    if (bodyType.value === 'raw' && rawContent.value.trim()) {
-      try { requestBody = JSON.parse(rawContent.value); }
-      catch (e) { requestBody = rawContent.value; }
-    } else if (bodyType.value === 'form-data' || bodyType.value === 'urlencoded') {
-      requestBody = convertParamsToObject(bodyParams.value);
-    }
-
-    let fullUrl = formData.value.url;
-    if (Object.keys(requestQueryParams).length > 0) {
-      const urlObj = new URL(fullUrl);
-      Object.entries(requestQueryParams).forEach(([key, value]) => {
-        urlObj.searchParams.append(key, value);
-      });
-      fullUrl = urlObj.toString();
-    }
-
-    const fetchOptions = {
-      method: formData.value.method,
-      headers: requestHeaders,
-      mode: 'cors',
+    const payload = {
+      ...collectRequest(),
+      variables: rowsToObject(debugVariables.value),
     };
-
-    if (formData.value.method !== 'GET' && requestBody !== null) {
-      if (bodyType.value === 'form-data') {
-        const formDataObj = new FormData();
-        Object.entries(requestBody).forEach(([key, value]) => formDataObj.append(key, value));
-        fetchOptions.body = formDataObj;
-        delete fetchOptions.headers['Content-Type'];
-      } else if (bodyType.value === 'urlencoded') {
-        const urlSearchParams = new URLSearchParams();
-        Object.entries(requestBody).forEach(([key, value]) => urlSearchParams.append(key, value));
-        fetchOptions.body = urlSearchParams;
-        if (!requestHeaders['Content-Type']) {
-          fetchOptions.headers['Content-Type'] = 'application/x-www-form-urlencoded';
-        }
-      } else if (bodyType.value === 'raw') {
-        if (typeof requestBody === 'object') {
-          fetchOptions.body = JSON.stringify(requestBody);
-          if (!requestHeaders['Content-Type']) fetchOptions.headers['Content-Type'] = 'application/json';
-        } else {
-          fetchOptions.body = requestBody;
-          if (!requestHeaders['Content-Type']) {
-            const contentTypes = {
-              json: 'application/json', xml: 'application/xml',
-              html: 'text/html', text: 'text/plain',
-            };
-            fetchOptions.headers['Content-Type'] = contentTypes[rawType.value] || 'text/plain';
-          }
-        }
-      }
+    if (formData.value.project) payload.project = formData.value.project;
+    if (selectedEnvId.value) payload.env_id = selectedEnvId.value;
+    debugResult.value = await apiTestApi.debugApiCase(payload);
+    if (debugResult.value.status === 'error') {
+      ElMessage.error(`请求发送失败: ${debugResult.value.error}`);
+    } else if (debugResult.value.status === 'failed') {
+      ElMessage.warning('请求已发送，断言或变量提取未通过');
+    } else {
+      ElMessage.success('请求发送成功');
     }
-
-    const fetchResponse = await fetch(fullUrl, fetchOptions);
-    const endTime = Date.now();
-
-    let responseData;
-    const contentType = fetchResponse.headers.get('content-type');
-    try {
-      if (contentType && contentType.includes('application/json')) {
-        responseData = await fetchResponse.json();
-      } else {
-        responseData = await fetchResponse.text();
-      }
-    } catch (e) {
-      responseData = await fetchResponse.text();
-    }
-
-    const responseHeaders = {};
-    fetchResponse.headers.forEach((value, key) => { responseHeaders[key] = value; });
-
-    response.value = {
-      status: fetchResponse.status,
-      time: endTime - startTime,
-      size: getResponseSize(responseData),
-      data: responseData,
-      headers: responseHeaders,
-    };
-
-    ElMessage.success('请求发送成功');
   } catch (error) {
     console.error('请求失败:', error);
-    ElMessage.error(`请求发送失败: ${error.message}`);
-    response.value = {
-      status: 0, time: Date.now() - startTime, size: '0 B',
-      data: `Error: ${error.message}`, headers: {},
-    };
+    ElMessage.error(errorMessage(error, '请求发送失败'));
   } finally {
     sendLoading.value = false;
   }
@@ -612,18 +667,24 @@ const handleSave = async () => {
     ElMessage.error('请输入用例名称');
     return;
   }
+  if (!formData.value.url) {
+    ElMessage.error('请输入请求URL');
+    return;
+  }
+  if (!formData.value.project) {
+    ElMessage.error('请选择所属项目');
+    return;
+  }
 
   saveLoading.value = true;
   try {
     const saveData = {
-      ...formData.value,
-      headers: convertParamsToObject(headers.value),
-      params: convertParamsToObject(queryParams.value),
-      body: bodyType.value === 'raw'
-        ? JSON.parse(rawContent.value || '{}')
-        : convertParamsToObject(bodyParams.value),
-      expected_status_code: 200,
-      expected_response: {},
+      name: formData.value.name,
+      project: formData.value.project,
+      description: formData.value.description || '',
+      priority: formData.value.priority,
+      is_active: formData.value.is_active,
+      ...collectRequest(),
     };
 
     if (isEdit.value) {
@@ -637,19 +698,42 @@ const handleSave = async () => {
     router.push({ name: 'ApiCaseManage' });
   } catch (error) {
     console.error('保存失败:', error);
-    ElMessage.error('保存失败');
+    ElMessage.error(errorMessage(error, '保存失败'));
   } finally {
     saveLoading.value = false;
   }
 };
 
-const handleBack = () => {
-  router.push({ name: 'ApiCaseManage' });
+// 从 curl 导入：后端解析，结果填到页面上（不直接保存）
+const handleImportCurl = async () => {
+  if (!curlText.value.trim()) {
+    ElMessage.error('请粘贴 curl 命令');
+    return;
+  }
+  curlLoading.value = true;
+  try {
+    const parsed = await apiTestApi.importCurl(curlText.value);
+    formData.value.url = parsed.url;
+    formData.value.method = parsed.method;
+    if (!formData.value.name) formData.value.name = parsed.name || '';
+    headers.value = objectToRows(parsed.headers);
+    queryParams.value = objectToRows(parsed.params);
+    applyBody(parsed.body_type, parsed.body);
+    auth.value = { type: 'none', token: '', username: '', password: '', key: '', value: '', ...(parsed.auth || {}) };
+    curlDialogVisible.value = false;
+    curlText.value = '';
+    activeTab.value = bodyType.value === 'none' ? 'header' : 'body';
+    if (parsed.warnings?.length) ElMessage.warning(parsed.warnings.join('；'));
+    else ElMessage.success('已填入，检查后保存');
+  } catch (error) {
+    ElMessage.error(errorMessage(error, '解析失败'));
+  } finally {
+    curlLoading.value = false;
+  }
 };
 
-const formatResponseBody = (data) => {
-  if (typeof data === 'object') return JSON.stringify(data, null, 2);
-  return data;
+const handleBack = () => {
+  router.push({ name: 'ApiCaseManage' });
 };
 
 const getStatusClass = (status) => {
@@ -671,21 +755,6 @@ const getStatusText = (status) => {
   if (status >= 500) return 'Server Error';
   if (status === 0) return 'Network Error';
   return '';
-};
-
-const getResponseSize = (data) => {
-  const size = JSON.stringify(data).length;
-  if (size < 1024) return `${size} B`;
-  return `${(size / 1024).toFixed(1)} KB`;
-};
-
-const copyResponse = async () => {
-  try {
-    await navigator.clipboard.writeText(formatResponseBody(response.value.data));
-    ElMessage.success('已复制到剪贴板');
-  } catch (e) {
-    ElMessage.error('复制失败');
-  }
 };
 
 watch(rawContent, updateLineCount, { immediate: true });
@@ -1516,5 +1585,44 @@ watch(rawContent, updateLineCount, { immediate: true });
   .col-key { width: 140px; }
   .col-value { width: 160px; }
   .col-desc { display: none; }
+}
+
+/* ============ 环境选择 / 认证 / curl 导入 ============ */
+.env-select {
+  width: 170px;
+}
+.env-select :deep(.el-select__wrapper) {
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+}
+
+.auth-form {
+  max-width: 640px;
+}
+.auth-tip {
+  margin-left: 90px;
+  font-size: 12px;
+  color: var(--text-3);
+  line-height: 1.6;
+}
+
+.response-card {
+  max-height: none;
+}
+.response-content {
+  padding: 12px 20px 16px;
+  overflow: visible;
+}
+
+.curl-textarea :deep(.el-textarea__inner) {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.curl-tip {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #94a3b8;
+  line-height: 1.5;
 }
 </style>

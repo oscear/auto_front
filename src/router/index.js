@@ -83,6 +83,31 @@ export const menuRoutes = [
             meta: { title: '知识库管理', icon: 'Collection' },
             component: () => import('../pages/knowledge/KnowledgeBase.vue'),
           },
+          // ---- 接口自动化 ----
+          {
+            path: '/api-env-manage',
+            name: 'ApiEnvManage',
+            meta: { title: '接口环境', icon: 'Connection' },
+            component: () => import('@/pages/apitest/ApiEnvManage.vue'),
+          },
+          {
+            path: '/api-scenario-manage',
+            name: 'ApiScenarioManage',
+            meta: { title: '接口场景', icon: 'Connection' },
+            component: () => import('@/pages/apitest/ApiScenarioManage.vue'),
+          },
+          {
+            path: '/api-scenario-edit/:id?',
+            name: 'ApiScenarioEdit',
+            component: () => import('@/pages/apitest/ApiScenarioEdit.vue'),
+            meta: { title: '编排接口场景', hidden: true },
+          },
+          {
+            path: '/api-run-list',
+            name: 'ApiRunList',
+            meta: { title: '接口执行记录', icon: 'Connection' },
+            component: () => import('@/pages/apitest/ApiRunList.vue'),
+          },
         ],
       },
     ],

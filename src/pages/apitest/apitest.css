@@ -1,0 +1,140 @@
+/* 接口自动化列表页共用样式（与用例列表页同一套外观） */
+.apitest-page {
+  padding: 20px;
+  background: #f5f5f5;
+  min-height: 100vh;
+}
+.apitest-page .control-card {
+  margin-bottom: 16px;
+  border-radius: 8px;
+  border: 1px solid #e5e6eb;
+  background: #fff;
+}
+.apitest-page .control-container {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 16px;
+}
+.apitest-page .control-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  flex-wrap: wrap;
+}
+.apitest-page .control-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.apitest-page .search-input {
+  width: 220px;
+}
+.apitest-page .filter-select {
+  width: 160px;
+}
+.apitest-page .refresh-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+}
+.apitest-page .action-btn {
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 14px;
+}
+.apitest-page .table-card {
+  margin-top: 16px;
+  border-radius: 8px;
+  border: 1px solid #e5e6eb;
+  background: #fff;
+}
+.apitest-page .table-card > .el-card__header {
+  padding: 16px 20px;
+  border-bottom: 1px solid #e5e6eb;
+}
+.apitest-page .table-card > .el-card__body {
+  padding: 0;
+}
+.apitest-page .table-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.apitest-page .table-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  font-weight: 600;
+  color: #333;
+}
+.apitest-page .count-tag {
+  background: #409eff;
+  color: white;
+  border: none;
+  border-radius: 12px;
+  padding: 2px 8px;
+  font-size: 12px;
+}
+.apitest-page .modern-table .el-table__header th {
+  background: #fafbfc;
+  border-bottom: 1px solid #e5e6eb;
+  color: #333;
+  font-weight: 600;
+  padding: 12px 8px;
+}
+.apitest-page .modern-table .el-table__body tr:hover > td {
+  background: #f7f8fa;
+}
+.apitest-page .modern-table .el-table__body td {
+  padding: 12px 8px;
+}
+.apitest-page .row-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1e293b;
+}
+.apitest-page .row-sub {
+  font-size: 12px;
+  color: #94a3b8;
+  margin-top: 2px;
+}
+.apitest-page .mono {
+  font-family: 'JetBrains Mono', Monaco, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+}
+.apitest-page .action-buttons {
+  display: flex;
+  justify-content: center;
+  flex-wrap: nowrap;
+  gap: 2px;
+}
+.apitest-page .action-btn-text {
+  color: #64748b;
+  font-size: 13px;
+  margin-left: 0;
+  padding: 4px 5px;
+}
+.apitest-page .modern-table .el-table__row {
+  cursor: default;
+}
+.apitest-page .action-btn-text:hover {
+  color: #3b82f6;
+}
+.apitest-page .action-btn-text.danger {
+  color: #ef4444;
+}
+.apitest-page .pager {
+  display: flex;
+  justify-content: flex-end;
+  padding: 14px 20px;
+}
+.apitest-page .form-tip {
+  font-size: 12px;
+  color: #94a3b8;
+  line-height: 1.5;
+  margin-top: 4px;
+}

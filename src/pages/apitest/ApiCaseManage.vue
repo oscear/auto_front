@@ -55,6 +55,7 @@
             >
               <el-option label="全部状态" value="" />
               <el-option label="待执行" value="pending" />
+              <el-option label="执行中" value="running" />
               <el-option label="通过" value="passed" />
               <el-option label="失败" value="failed" />
               <el-option label="错误" value="error" />
@@ -116,13 +117,13 @@
           empty-text="暂无数据"
           @row-click="handleRowClick"
         >
-          <el-table-column prop="id" label="ID" min-width="60" align="center">
+          <el-table-column prop="id" label="ID" width="76" align="center">
             <template #default="scope">
               #{{ scope.row.id }}
             </template>
           </el-table-column>
 
-          <el-table-column prop="name" label="用例名称" min-width="200" show-overflow-tooltip>
+          <el-table-column prop="name" label="用例名称" min-width="160" show-overflow-tooltip>
             <template #default="scope">
               <div class="case-name-cell">
                 <div class="case-text">
@@ -132,7 +133,7 @@
             </template>
           </el-table-column>
 
-          <el-table-column prop="method" label="请求方法" min-width="80" align="center">
+          <el-table-column prop="method" label="方法" width="96" align="center">
             <template #default="scope">
               <el-tag 
                 :type="getMethodTagType(scope.row.method)" 
@@ -144,7 +145,7 @@
             </template>
           </el-table-column>
 
-          <el-table-column prop="url" label="接口地址" min-width="250" show-overflow-tooltip>
+          <el-table-column prop="url" label="接口地址" min-width="200" show-overflow-tooltip>
             <template #default="scope">
               <div class="url-cell">
                 <el-icon class="url-icon"><Link /></el-icon>
@@ -153,13 +154,13 @@
             </template>
           </el-table-column>
 
-          <el-table-column prop="project" label="所属项目" min-width="120">
+          <el-table-column prop="project" label="所属项目" min-width="110" show-overflow-tooltip>
             <template #default="scope">
-              <span class="project-text">{{ getProjectName(scope.row.project) }}</span>
+              <span class="project-text">{{ getProjectName(scope.row) }}</span>
             </template>
           </el-table-column>
 
-          <el-table-column prop="status" label="状态" min-width="80" align="center">
+          <el-table-column prop="status" label="状态" width="96" align="center">
             <template #default="scope">
               <el-tag :type="getStatusTagType(scope.row.status)" size="small" effect="light">
                 {{ getStatusText(scope.row.status) }}
@@ -167,7 +168,21 @@
             </template>
           </el-table-column>
 
-          <el-table-column prop="priority" label="优先级" min-width="80" align="center">
+          <el-table-column prop="last_run_time" label="最近执行" width="176" align="center">
+            <template #default="scope">
+              <el-link
+                v-if="scope.row.last_run_id"
+                type="primary"
+                :underline="false"
+                @click.stop="handleViewResult(scope.row)"
+              >
+                {{ formatTime(scope.row.last_run_time) }}
+              </el-link>
+              <span v-else class="never-run">还没执行过</span>
+            </template>
+          </el-table-column>
+
+          <el-table-column prop="priority" label="优先级" width="86" align="center">
             <template #default="scope">
               <el-tag :type="getPriorityTagType(scope.row.priority)" size="small" effect="light">
                 {{ getPriorityText(scope.row.priority) }}
@@ -175,7 +190,7 @@
             </template>
           </el-table-column>
 
-          <el-table-column prop="created_by" label="创建人" min-width="100">
+          <el-table-column prop="created_by" label="创建人" width="120" show-overflow-tooltip>
             <template #default="scope">
               <div class="creator-cell">
                 <el-avatar :size="24" class="creator-avatar">
@@ -186,7 +201,7 @@
             </template>
           </el-table-column>
 
-          <el-table-column label="操作" min-width="200" align="center">
+          <el-table-column label="操作" width="270" align="center" fixed="right">
             <template #default="scope">
               <div class="action-buttons">
                 <el-button text size="small" @click.stop="handleEditNew(scope.row)" class="action-btn-text">
@@ -200,6 +215,10 @@
                 <el-button text size="small" @click.stop="handleViewResult(scope.row)" class="action-btn-text">
                   <el-icon><View /></el-icon>
                   结果
+                </el-button>
+                <el-button text size="small" @click.stop="handleViewHistory(scope.row)" class="action-btn-text">
+                  <el-icon><Clock /></el-icon>
+                  历史
                 </el-button>
                 <el-button text size="small" @click.stop="handleDelete(scope.row)" class="action-btn-text danger">
                   <el-icon><Delete /></el-icon>
@@ -225,7 +244,7 @@
               <div class="case-card-header">
                 <div class="case-info">
                   <span class="case-id">#{{ testcase.id }}</span>
-                  <span class="case-project">{{ getProjectName(testcase.project) }}</span>
+                  <span class="case-project">{{ getProjectName(testcase) }}</span>
                 </div>
                 <el-dropdown trigger="click" @click.stop>
                   <el-button text class="card-action-btn">
@@ -241,6 +260,9 @@
                       </el-dropdown-item>
                       <el-dropdown-item @click="handleViewResult(testcase)">
                         <el-icon><View /></el-icon>查看结果
+                      </el-dropdown-item>
+                      <el-dropdown-item @click="handleViewHistory(testcase)">
+                        <el-icon><Clock /></el-icon>执行历史
                       </el-dropdown-item>
                       <el-dropdown-item divided @click="handleDelete(testcase)">
                         <el-icon><Delete /></el-icon>删除
@@ -304,6 +326,9 @@
         </div>
       </div>
     </el-card>
+
+    <!-- 选环境执行 + 结果抽屉 -->
+    <RunLauncher ref="launcher" @done="fetchApiCases" />
   </div>
 </template>
 
@@ -327,9 +352,12 @@ import {
   Clock,
   MoreFilled,
 } from '@element-plus/icons-vue';
-import { apiTestApi } from '@/utils/api';
+import { apiTestApi } from '@/utils/apiTestApi';
+import RunLauncher from './components/RunLauncher.vue';
+import { errorMessage, formatTime } from './common';
 
 const router = useRouter();
+const launcher = ref(null);
 
 // 数据
 const testcases = ref([]);
@@ -408,9 +436,10 @@ const handleRowClick = (row) => {
 };
 
 // 获取项目名称
-const getProjectName = (projectId) => {
-  const project = projects.value.find((p) => p.id === projectId);
-  return project?.name || '未知项目';
+const getProjectName = (testcase) => {
+  if (!testcase.project) return '未归属项目';
+  const project = projects.value.find((p) => p.id === testcase.project);
+  return project?.name || testcase.project_name || '未知项目';
 };
 
 // 获取方法标签类型
@@ -497,12 +526,10 @@ const formatDate = (dateString) => {
 // 获取用例列表
 const fetchApiCases = async () => {
   try {
-    const response = await apiTestApi.getApiCases();
-    console.log('获取到的接口用例列表:', response.data);
-    testcases.value = response;
+    testcases.value = await apiTestApi.getApiCases();
   } catch (error) {
     console.error('获取接口用例列表失败:', error);
-    ElMessage.error('获取接口用例列表失败');
+    ElMessage.error(errorMessage(error, '获取接口用例列表失败'));
   }
 };
 
@@ -527,28 +554,28 @@ const handleEditNew = (testcase) => {
   router.push({ name: 'ApiCaseEdit', params: { id: testcase.id } });
 };
 
-// 运行用例
-const handleExecute = async (testcase) => {
-  try {
-    console.log('运行接口用例', testcase);
-    await apiTestApi.runApiCase({ id: testcase.id });
-    ElMessage.success('执行成功');
-    // 刷新列表以更新状态
-    fetchApiCases();
-  } catch (error) {
-    console.error('执行失败:', error);
-    ElMessage.error('执行失败');
-  }
+// 运行用例：先选环境，执行完在抽屉里看结果，列表随后刷新
+const handleExecute = (testcase) => {
+  launcher.value?.open({
+    kind: 'case',
+    id: testcase.id,
+    name: testcase.name,
+    projectId: testcase.project,
+  });
 };
 
-// 查看执行结果
+// 查看最近一次执行结果
 const handleViewResult = (testcase) => {
-  console.log('查看执行结果', testcase);
-  router.push({ 
-    name: 'ApiCaseEdit', 
-    params: { id: testcase.id },
-    query: { viewMode: 'true' }
-  });
+  if (!testcase.last_run_id) {
+    ElMessage.info('这条用例还没有执行过');
+    return;
+  }
+  launcher.value?.showRun(testcase.last_run_id);
+};
+
+// 查看这条用例的全部执行记录
+const handleViewHistory = (testcase) => {
+  router.push({ name: 'ApiRunList', query: { case: testcase.id } });
 };
 
 // 删除用例
@@ -564,7 +591,7 @@ const handleDelete = (testcase) => {
       fetchApiCases();
     } catch (error) {
       console.error('删除失败:', error);
-      ElMessage.error('删除失败');
+      ElMessage.error(errorMessage(error, '删除失败'));
     }
   });
 };
@@ -603,6 +630,8 @@ onMounted(() => {
   align-items: center;
   gap: 12px;
   flex: 1;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
 .search-section {
@@ -617,6 +646,7 @@ onMounted(() => {
 
 .filter-section {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
 }
 
@@ -634,6 +664,7 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-shrink: 0;
 }
 
 .refresh-btn {
@@ -649,7 +680,13 @@ onMounted(() => {
 
 .action-buttons {
   display: flex;
-  gap: 8px;
+  justify-content: center;
+  flex-wrap: nowrap;
+  gap: 2px;
+}
+
+.modern-table .action-btn-text {
+  padding: 4px 5px;
 }
 
 .action-btn {
@@ -777,6 +814,12 @@ onMounted(() => {
 .action-btn-text {
   color: #64748b;
   font-size: 13px;
+  margin-left: 0;
+}
+
+.never-run {
+  color: #94a3b8;
+  font-size: 12px;
 }
 
 .action-btn-text:hover {
