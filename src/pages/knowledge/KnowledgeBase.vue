@@ -75,7 +75,7 @@
         <!-- 右侧操作按钮 -->
         <div class="control-right">
           <el-tooltip content="刷新数据" placement="top">
-            <el-button circle @click="fetchList" class="refresh-btn">
+            <el-button circle @click="refresh" class="refresh-btn">
               <el-icon><Refresh /></el-icon>
             </el-button>
           </el-tooltip>
@@ -95,14 +95,15 @@
           <div class="table-title">
             <el-icon><List /></el-icon>
             <span>知识库列表</span>
-            <el-tag class="count-tag">{{ filteredList.length }}</el-tag>
+            <el-tag class="count-tag">{{ total }}</el-tag>
           </div>
         </div>
       </template>
 
       <div class="table-container">
         <el-table
-          :data="pagedList"
+          :data="kbList"
+          v-loading="loading"
           style="width: 100%"
           class="modern-table"
           empty-text="暂无数据"
@@ -221,7 +222,7 @@
           v-model:current-page="currentPage"
           v-model:page-size="pageSize"
           :page-sizes="[20, 50, 100, 200]"
-          :total="filteredList.length"
+          :total="total"
           layout="total, sizes, prev, pager, next, jumper"
           background
           small
@@ -340,7 +341,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed, nextTick, watch } from 'vue';
+import { ref, onMounted, onBeforeUnmount, computed, nextTick, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import {
@@ -351,14 +352,17 @@ import {
   Edit,
   Delete,
 } from '@element-plus/icons-vue';
-import { kbApi, projectApi } from '@/utils/api';
+import { kbApi, projectApi, unwrapList } from '@/utils/api';
 import KbPageStates from './KbPageStates.vue';
 import KbTransitions from './KbTransitions.vue';
 
 const route = useRoute();
 
-// 数据
+// 数据：kbList 只放当前页（后端分页），total 是筛选后的总条数
 const kbList = ref([]);
+const total = ref(0);
+const loading = ref(false);
+const facets = ref({ pages: [], states: [] });
 const projects = ref([]);
 const searchQuery = ref('');
 const filterProject = ref('');
@@ -368,7 +372,7 @@ const filterSource = ref('');
 const filterRole = ref('');
 const activeTab = ref('elements');
 
-// 分页（前端分页，避免上千条一次渲染）
+// 分页（后端分页：筛选、搜索、翻页都交给接口，每次只取一页）
 const currentPage = ref(1);
 const pageSize = ref(50);
 
@@ -414,63 +418,62 @@ const aliasInputVisible = ref(false);
 const aliasInputValue = ref('');
 const aliasInputRef = ref(null);
 
-// 计算属性：唯一的页面列表
-const uniquePages = computed(() => {
-  const pages = kbList.value.map((item) => item.page).filter(Boolean);
-  return [...new Set(pages)];
+// 筛选下拉的候选值：列表只有一页数据，候选值单独向后端要（随所选项目变化）
+const uniquePages = computed(() => facets.value.pages || []);
+
+const uniqueStates = computed(() =>
+  [...new Set((facets.value.states || []).map((v) => v || ''))]
+    .sort()
+    .map((v) => ({ value: v === '' ? DEFAULT_STATE : v, label: v === '' ? '(默认)' : v }))
+);
+
+// 当前筛选条件 → 接口参数。state 的「默认状态」在库里是空串，接口用 __default__ 指代
+const buildParams = () => {
+  const params = { page_no: currentPage.value, page_size: pageSize.value };
+  const search = (searchQuery.value || '').trim();
+  if (search) params.search = search;
+  if (filterProject.value) params.project = filterProject.value;
+  if (filterPage.value) params.page = filterPage.value;
+  if (filterState.value) params.state = filterState.value;
+  if (filterSource.value) params.source = filterSource.value;
+  if (filterRole.value) params.role = filterRole.value;
+  return params;
+};
+
+let lastQueryKey = ''; // 最近一次已发出的查询；条件没变就不重复请求
+let requestSeq = 0; // 只认最后一次请求的结果，慢的旧响应直接丢弃
+let searchTimer = null;
+
+// 回到第一页并查询。页码变了由下面的页码监听去查，这里不重复发
+const reloadFromFirstPage = () => {
+  if (currentPage.value !== 1) {
+    currentPage.value = 1;
+  } else {
+    fetchList();
+  }
+};
+
+// 筛选条件变化：回到第一页重新查
+watch([filterProject, filterPage, filterState, filterSource, filterRole], reloadFromFirstPage);
+
+// 搜索框：停止输入 300 毫秒后再查，避免每敲一个字发一次请求
+watch(searchQuery, () => {
+  if (searchTimer) clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    searchTimer = null;
+    reloadFromFirstPage();
+  }, 300);
 });
 
-const uniqueStates = computed(() => {
-  const set = new Set(kbList.value.map((item) => item.state || ''));
-  return [...set].sort().map((v) => ({ value: v === '' ? DEFAULT_STATE : v, label: v === '' ? '(默认)' : v }));
-});
+// 翻页、改每页条数
+watch([currentPage, pageSize], () => fetchList());
 
-// 计算属性：筛选后的列表
-const filteredList = computed(() => {
-  let filtered = kbList.value;
+// 换项目后候选的页面 / 状态跟着变
+watch(filterProject, () => fetchFacets());
 
-  if (searchQuery.value) {
-    const query = searchQuery.value.toLowerCase().trim();
-    filtered = filtered.filter(
-      (item) =>
-        String(item.id).includes(query) ||
-        item.name?.toLowerCase().includes(query) ||
-        (item.aliases && item.aliases.some((a) => a.toLowerCase().includes(query)))
-    );
-  }
-
-  if (filterProject.value) {
-    filtered = filtered.filter((item) => item.project === filterProject.value);
-  }
-
-  if (filterPage.value) {
-    filtered = filtered.filter((item) => item.page === filterPage.value);
-  }
-
-  if (filterState.value) {
-    const want = filterState.value === DEFAULT_STATE ? '' : filterState.value;
-    filtered = filtered.filter((item) => (item.state || '') === want);
-  }
-
-  if (filterSource.value) {
-    filtered = filtered.filter((item) => (item.source || '') === filterSource.value);
-  }
-
-  if (filterRole.value) {
-    filtered = filtered.filter((item) => item.role === filterRole.value);
-  }
-
-  return filtered;
-});
-
-const pagedList = computed(() => {
-  const start = (currentPage.value - 1) * pageSize.value;
-  return filteredList.value.slice(start, start + pageSize.value);
-});
-
-// 筛选条件变化回到第一页
-watch([searchQuery, filterProject, filterPage, filterState, filterSource, filterRole], () => {
-  currentPage.value = 1;
+onBeforeUnmount(() => {
+  if (searchTimer) clearTimeout(searchTimer);
+  requestSeq += 1;
 });
 
 // 从页面档案跳到该页面该状态下的元素列表
@@ -510,15 +513,59 @@ const fetchProjects = async () => {
   }
 };
 
-// 获取知识库列表
-const fetchList = async () => {
+// 获取知识库列表（当前页）。force=true 时条件没变也重新查（刷新按钮、增删改之后）
+const fetchList = async (force = false) => {
+  const params = buildParams();
+  const key = JSON.stringify(params);
+  if (!force && key === lastQueryKey) return;
+  lastQueryKey = key;
+  const seq = ++requestSeq;
+  loading.value = true;
   try {
-    const response = await kbApi.getList();
-    kbList.value = response;
+    const response = await kbApi.getList(params);
+    if (seq !== requestSeq) return;
+    if (Array.isArray(response)) {
+      // 后端还没升级到支持分页时返回整个数组：只取当前页来渲染，不一次画上千行
+      const start = (params.page_no - 1) * params.page_size;
+      kbList.value = response.slice(start, start + params.page_size);
+      total.value = response.length;
+    } else {
+      const { items, total: count } = unwrapList(response);
+      kbList.value = items;
+      total.value = count;
+    }
   } catch (error) {
+    if (seq !== requestSeq) return;
+    lastQueryKey = '';
+    if (error?.response?.status === 404 && currentPage.value > 1) {
+      // 删掉最后一页仅剩的一条后页码越界：退回第一页（页码监听会重新查）
+      currentPage.value = 1;
+      return;
+    }
     console.error('获取知识库列表失败:', error);
     ElMessage.error('获取知识库列表失败');
+  } finally {
+    if (seq === requestSeq) loading.value = false;
   }
+};
+
+// 页面 / 状态下拉的候选值。接口不存在或出错时保持为空，不影响列表
+const fetchFacets = async () => {
+  try {
+    const res = await kbApi.getFacets(filterProject.value ? { project: filterProject.value } : {});
+    facets.value = {
+      pages: Array.isArray(res?.pages) ? res.pages : [],
+      states: Array.isArray(res?.states) ? res.states : [],
+    };
+  } catch (error) {
+    facets.value = { pages: [], states: [] };
+  }
+};
+
+// 刷新按钮、增删改之后：列表和候选值都重新取
+const refresh = () => {
+  fetchList(true);
+  fetchFacets();
 };
 
 // 新增
@@ -564,7 +611,7 @@ const handleDelete = (row) => {
     try {
       await kbApi.delete(row.id);
       ElMessage.success('删除成功');
-      fetchList();
+      refresh();
     } catch (error) {
       ElMessage.error('删除失败');
     }
@@ -582,7 +629,7 @@ const submitForm = async () => {
       ElMessage.success('新增成功');
     }
     dialogVisible.value = false;
-    fetchList();
+    refresh();
   } catch (error) {
     ElMessage.error('操作失败');
   }
@@ -635,7 +682,8 @@ onMounted(() => {
     searchQuery.value = String(route.query.highlight);
   }
   fetchProjects();
-  fetchList();
+  fetchList(true);
+  fetchFacets();
 });
 </script>
 

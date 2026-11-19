@@ -149,9 +149,9 @@ const isValidKey = (key) => {
 // 获取项目列表
 const fetchProjects = async () => {
   try {
-    const response = await projectApi.getProjects();
-    console.log('获取到的项目列表:', response.data);
-    projects.value = response;
+    // 管理页总是拿最新的，不用别的页面留下的缓存
+    const response = await projectApi.getProjects({ fresh: true });
+    projects.value = Array.isArray(response) ? response : response?.results || [];
   } catch (error) {
     ElMessage.error('获取项目列表失败');
   }

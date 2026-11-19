@@ -1,6 +1,6 @@
 // src/router/index.js
 import { createRouter, createWebHistory } from 'vue-router';
-import Layout from '../layout/Layout.vue';
+import Layout from '../Layout/Layout.vue';
 import Dashboard from '../pages/Dashboard.vue';
 import User from '../pages/User.vue';
 import Settings from '../pages/Settings.vue';

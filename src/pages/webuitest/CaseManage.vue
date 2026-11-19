@@ -561,7 +561,6 @@ const watchRun = (testcase, runId) => {
 
 // 查看执行结果
 const handleViewResult = (project) => {
-  console.log('查看执行结果', project);
   // 跳转到TestCaseEdit页面的查看模式
   router.push({ 
     name: 'TestCaseEdit', 

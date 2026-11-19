@@ -1,4 +1,5 @@
 import request from './request';
+import { projectApi } from './api';
 
 // 接口自动化的接口封装（后端路由前缀 /api/automation/）
 const BASE = '/api/automation';
@@ -8,7 +9,7 @@ export const asList = (res) => (Array.isArray(res) ? res : res?.results || []);
 
 export const apiTestApi = {
   // 项目列表（复用 UI 自动化的项目）
-  getProjects: () => request.get('/api/projects/').then(asList),
+  getProjects: () => projectApi.getProjects().then(asList),
 
   // ---------- 用例 ----------
   getApiCases: (params) => request.get(`${BASE}/cases/`, { params }).then(asList),

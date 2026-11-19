@@ -1336,7 +1336,8 @@ const fetchProjects = async () => {
 // 获取用例列表
 const fetchTestCases = async () => {
   try {
-    const response = await projectApi.getCases();
+    // 只用于「引用用例」下拉：brief 只回 id / 名称 / 项目，不带步骤
+    const response = await projectApi.getCases({ brief: 1 });
     testCases.value = unwrapList(response).items;
   } catch (error) {
     console.error('获取用例列表失败:', error);

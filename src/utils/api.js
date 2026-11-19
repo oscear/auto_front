@@ -42,29 +42,36 @@ export async function parseNaturalLanguageStream(data, { onDelta, onDone, signal
   let buf = '';
   let lastDone = null;
 
+  const handleLine = (ln) => {
+    const s = ln.trim();
+    if (!s) return;
+    let ev;
+    try {
+      ev = JSON.parse(s);
+    } catch {
+      return;
+    }
+    if (!ev || typeof ev !== 'object') return;
+    if (ev.type === 'delta') {
+      onDelta?.(ev.text || '');
+    } else if (ev.type === 'done' || (!ev.type && Array.isArray(ev.steps))) {
+      // 没有 type、但带 steps：后端没升级时返回的是普通 JSON（非流式），当作最终帧用
+      lastDone = ev;
+      onDone?.(ev);
+    }
+  };
+
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
     buf += decoder.decode(value, { stream: true });
     const lines = buf.split('\n');
     buf = lines.pop() || '';
-    for (const ln of lines) {
-      const s = ln.trim();
-      if (!s) continue;
-      let ev;
-      try {
-        ev = JSON.parse(s);
-      } catch {
-        continue;
-      }
-      if (ev.type === 'delta') {
-        onDelta?.(ev.text || '');
-      } else if (ev.type === 'done') {
-        lastDone = ev;
-        onDone?.(ev);
-      }
-    }
+    lines.forEach(handleLine);
   }
+  // 最后一段没有换行结尾时也要处理（否则会丢掉最终帧）
+  buf += decoder.decode();
+  handleLine(buf);
   return lastDone;
 }
 
@@ -200,6 +207,44 @@ export async function startCaseRun(caseId) {
   }
 }
 
+// ───────────── 项目列表缓存 ─────────────
+// 几乎每个页面进来都要拉一次项目列表。这里把同一时刻的并发请求合并成一个，并在短时间内复用上次结果；
+// 本页面新增 / 修改 / 删除项目后立即失效。每次返回一份新拷贝，各页面怎么改都互不影响。
+const PROJECTS_TTL_MS = 30 * 1000;
+let projectsCache = null; // { at, data }
+let projectsPending = null;
+
+const cloneData = (v) => (v === undefined ? v : JSON.parse(JSON.stringify(v)));
+
+function invalidateProjects() {
+  projectsCache = null;
+  projectsPending = null;
+}
+
+function fetchProjects({ fresh = false } = {}) {
+  if (!fresh && projectsCache && Date.now() - projectsCache.at < PROJECTS_TTL_MS) {
+    return Promise.resolve(cloneData(projectsCache.data));
+  }
+  if (fresh || !projectsPending) {
+    const pending = request.get('/api/projects/').then(
+      (data) => {
+        // 期间被置为失效（有人改了项目）或被更新的请求顶替，就不写缓存
+        if (projectsPending === pending) {
+          projectsCache = { at: Date.now(), data };
+          projectsPending = null;
+        }
+        return data;
+      },
+      (error) => {
+        if (projectsPending === pending) projectsPending = null;
+        throw error;
+      }
+    );
+    projectsPending = pending;
+  }
+  return projectsPending.then(cloneData);
+}
+
 export const projectApi = {
   // 用户登录
   login: (data) => request.post('login/', data),
@@ -207,28 +252,23 @@ export const projectApi = {
   // 用户注册
   register: (data) => request.post('register/', data),
 
-  // 获取用户信息
-  getUserInfo: () => request.get('/api/auth/user/'),
-
-  // 用户登出
-  logout: () => request.post('/api/auth/logout/'),
-  // 获取项目列表
-  getProjects: () => request.get('/api/projects/'),
+  // 获取项目列表（30 秒内复用；传 { fresh: true } 强制重新拉，项目管理页用）
+  getProjects: (options) => fetchProjects(options),
 
   // 获取单个项目详情
   getProject: (id) => request.get(`/api/projects/${id}/`),
 
   // 创建项目
-  createProject: (data) => request.post('/api/projects/', data),
+  createProject: (data) => request.post('/api/projects/', data).finally(invalidateProjects),
 
   // 更新项目
-  updateProject: (id, data) => request.put(`/api/projects/${id}/`, data),
+  updateProject: (id, data) => request.put(`/api/projects/${id}/`, data).finally(invalidateProjects),
 
   // 删除项目
-  deleteProject: (id) => request.delete(`/api/projects/${id}/`),
+  deleteProject: (id) => request.delete(`/api/projects/${id}/`).finally(invalidateProjects),
 
-  // 获取用例列表
-  getCases: () => request.get('/api/testcases/'),
+  // 获取用例列表（params 可带 project / status；brief: 1 只回 id、名称、项目，下拉选择用）
+  getCases: (params) => request.get('/api/testcases/', { params }),
 
   // 获取单个用例详情
   getCase: (id) => request.get(`/api/testcases/${id}/`),
@@ -294,51 +334,20 @@ export const projectApi = {
   StartTask: (data) => request.post('/startTask/', data),
 };
 
-// 接口自动化测试API
-export const apiTestApi = {
-  // 获取项目列表 (复用现有接口)
-  getProjects: () => request.get('/api/projects/'),
-
-  // 获取接口测试用例列表
-  getApiCases: () => request.get('/api/automation/test-cases/'),
-
-  // 获取单个接口测试用例详情
-  getApiCase: (id) => request.get(`/api/automation/test-cases/${id}/`),
-
-  // 创建接口测试用例
-  createApiCase: (data) => request.post('/api/automation/test-cases/', data),
-
-  // 更新接口测试用例
-  updateApiCase: (id, data) => request.put(`/api/automation/test-cases/${id}/`, data),
-
-  // 删除接口测试用例
-  deleteApiCase: (id) => request.delete(`/api/automation/test-cases/${id}/`),
-
-  // 运行接口测试用例
-  runApiCase: (data) => request.post('/api/automation/test-cases/execute/', data),
-
-  // 测试接口用例（不保存结果）
-  testApiCase: (data) => request.post('/api/automation/test-cases/test/', data),
-
-  // 获取接口测试结果
-  getApiTestResults: () => request.get('/api/automation/test-results/'),
-
-  // 获取单个接口测试结果详情
-  getApiTestResult: (id) => request.get(`/api/automation/test-results/${id}/`),
-
-  // 删除接口测试结果
-  deleteApiTestResult: (id) => request.delete(`/api/automation/test-results/${id}/`),
-};
+// 接口自动化的接口封装在 ./apiTestApi.js
 
 // 知识库API
+// 列表分页：page_size + page_no（注意不是 page——这个接口的 page 是按页面名称筛选）
 export const kbApi = {
   getList: (params) => request.get('/api/kb/', { params }),
+  // 筛选下拉的候选值：{ pages: [...], states: [...] }
+  getFacets: (params) => request.get('/api/kb/facets/', { params }),
   create: (data) => request.post('/api/kb/', data),
   update: (id, data) => request.put(`/api/kb/${id}/`, data),
   delete: (id) => request.delete(`/api/kb/${id}/`),
 };
 
-// 知识库 · 页面档案API
+// 知识库 · 页面档案API（分页同样用 page_size + page_no，page 是页面名称筛选）
 export const kbPageApi = {
   getList: (params) => request.get('/api/kb-pages/', { params }),
   create: (data) => request.post('/api/kb-pages/', data),
